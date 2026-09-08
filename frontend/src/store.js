@@ -7,6 +7,8 @@ import { create } from 'zustand'
 const useStore = create((set) => ({
   // Connection state
   connected: false,
+  connectionState: 'disconnected',
+  connectionError: null,
   
   // Warehouse layout (set once on init)
   warehouse: null,        // { width, height, grid, blocked }
@@ -37,15 +39,26 @@ const useStore = create((set) => ({
   sim: { running: false, paused: false, speed: 1.0 },
   
   // Camera mode
-  cameraMode: 'orbit',     // 'orbit' | 'topdown' | 'follow' | 'focus'
+  cameraMode: 'overview',     // 'overview' | 'orbit' | 'topdown' | 'follow' | 'focus' | 'receiving' | 'dispatch'
   followRobotId: null,
   focusTarget: null,       // [x, y, z] to frame
+  selectedRobotId: null,
+  showRoutes: false,
+  showP2P: false,
+  shelfView: 'solid',      // 'solid' | 'xray' | 'lowRack'
+  reducedMotion: false,
   
   // Last update timestamp (for interpolation)
   lastUpdateTime: Date.now(),
   
   // Actions
-  setConnected: (val) => set({ connected: val }),
+  setConnected: (val) => set({
+    connected: val,
+    connectionState: val ? 'connected' : 'disconnected',
+    connectionError: val ? null : null,
+  }),
+  setConnectionState: (connectionState) => set({ connectionState }),
+  setConnectionError: (connectionError) => set({ connectionError, connectionState: 'error', connected: false }),
   
   updateState: (data) => set((state) => ({
     robots: data.robots || [],
@@ -62,6 +75,11 @@ const useStore = create((set) => ({
   setCameraMode: (mode) => set({ cameraMode: mode }),
   setFollowRobot: (id) => set({ followRobotId: id, cameraMode: 'follow' }),
   setFocusTarget: (target) => set({ focusTarget: target, cameraMode: 'focus' }),
+  selectRobot: (id) => set({ selectedRobotId: id }),
+  setShowRoutes: (showRoutes) => set({ showRoutes }),
+  setShowP2P: (showP2P) => set({ showP2P }),
+  setShelfView: (shelfView) => set({ shelfView }),
+  setReducedMotion: (reducedMotion) => set({ reducedMotion }),
 }))
 
 export default useStore

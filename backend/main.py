@@ -54,7 +54,7 @@ sim_state = {
     "running": False,
     "paused": False,
     "tick": 0,
-    "speed": 1.0,
+    "speed": 0.5,
 }
 
 connected_clients: list[WebSocket] = []
@@ -229,14 +229,10 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     connected_clients.append(ws)
 
-    # Send initial warehouse layout and robots
-    await ws.send_text(
-        json.dumps({
-            "type": "init",
-            "warehouse": warehouse.to_serializable(),
-            "robots": [r.to_dict() for r in robots],
-        })
-    )
+    # Send current full state so newly connected clients match live simulation state
+    init_state = build_state_message(sim_state["tick"])
+    init_state["type"] = "init"
+    await ws.send_text(json.dumps(init_state))
 
     try:
         while True:
@@ -249,6 +245,7 @@ async def websocket_endpoint(ws: WebSocket):
                     sim_state["running"] = True
                     sim_state["paused"] = False
                     sim_state["tick"] = 0
+                    sim_state["speed"] = 0.5
                     warehouse.blocked_cells.clear()
                     p2p_network.clear_log()
                     # Reset robots
@@ -258,7 +255,11 @@ async def websocket_endpoint(ws: WebSocket):
                     task_manager.__init__(warehouse)
                     metrics.__init__()
                     event_logger.clear()
-                    event_logger.add_event("system", "Fleet coordination engine started with 5 AMRs", tick=0)
+                    event_logger.add_event(
+                        "system",
+                        f"Fleet coordination engine started with {NUM_ROBOTS} AMRs",
+                        tick=0,
+                    )
                     asyncio.create_task(simulation_loop())
 
             elif action == "pause":

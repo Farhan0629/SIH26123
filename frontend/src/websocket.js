@@ -1,72 +1,122 @@
-import useStore from './store'
+import useStore from './store.js'
 
 let ws = null
 let reconnectTimer = null
+let consumers = 0
+let shouldReconnect = false
 
-export function connectWebSocket() {
-  const host = window.location.hostname || 'localhost'
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${wsProtocol}//${host}:8000/ws`
-  
+const RECONNECT_MS = 2000
+
+export function resolveWebSocketUrl() {
+  const envUrl = typeof import.meta !== 'undefined' && import.meta?.env ? import.meta.env.VITE_WS_URL : undefined
+  if (envUrl) return envUrl
+  const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost'
+  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${host}:8000/ws`
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+}
+
+function scheduleReconnect() {
+  if (!shouldReconnect || reconnectTimer) return
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    openSocket()
+  }, RECONNECT_MS)
+}
+
+function onMessage(event) {
+  let data
   try {
-    ws = new WebSocket(wsUrl)
-  } catch (e) {
-    console.error('Failed to create WebSocket:', e)
-    reconnectTimer = setTimeout(connectWebSocket, 2000)
+    data = JSON.parse(event.data)
+  } catch (error) {
+    console.error('WebSocket parse error:', error)
+    useStore.getState().setConnectionError('Received malformed update from backend.')
     return
   }
-  
+
+  if (data.type === 'init' || data.type === 'state_update') {
+    if (data.warehouse) {
+      useStore.getState().setWarehouse(data.warehouse)
+    }
+    useStore.getState().updateState(data)
+  }
+}
+
+function openSocket() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return
+  }
+
+  useStore.getState().setConnectionState('connecting')
+
+  try {
+    ws = new WebSocket(resolveWebSocketUrl())
+  } catch (error) {
+    console.error('Failed to create WebSocket:', error)
+    useStore.getState().setConnectionError('Failed to create websocket connection.')
+    scheduleReconnect()
+    return
+  }
+
   ws.onopen = () => {
-    console.log('WebSocket connected')
     useStore.getState().setConnected(true)
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
-    }
+    clearReconnectTimer()
   }
-  
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      
-      if (data.type === 'init') {
-        useStore.getState().setWarehouse(data.warehouse)
-        useStore.getState().updateState({
-          robots: data.robots,
-          tasks: { pending: [], active: [], completed_count: 0, total_count: 0 },
-          metrics: useStore.getState().metrics,
-          p2p_messages: [],
-          sim: { running: false, paused: false, speed: 1.0 },
-        })
-      } else if (data.type === 'state_update') {
-        if (data.warehouse) {
-          useStore.getState().setWarehouse(data.warehouse)
-        }
-        useStore.getState().updateState(data)
-      }
-    } catch (err) {
-      console.error('Error parsing message:', err)
-    }
-  }
-  
+
+  ws.onmessage = onMessage
+
   ws.onclose = () => {
-    console.log('WebSocket disconnected, reconnecting in 2s...')
+    ws = null
     useStore.getState().setConnected(false)
-    if (!reconnectTimer) {
-      reconnectTimer = setTimeout(connectWebSocket, 2000)
+    if (shouldReconnect) {
+      scheduleReconnect()
     }
   }
-  
-  ws.onerror = (err) => {
-    console.error('WebSocket error:', err)
-    if (ws) {
+
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error)
+    useStore.getState().setConnectionError('Connection failed. Retrying...')
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
       ws.close()
     }
   }
 }
 
-export function sendCommand(action, params = {}) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ action, ...params }))
+export function connectWebSocket() {
+  consumers += 1
+  shouldReconnect = true
+  openSocket()
+
+  return () => {
+    consumers = Math.max(0, consumers - 1)
+    if (consumers === 0) {
+      shouldReconnect = false
+      clearReconnectTimer()
+      if (ws) {
+        ws.onclose = null
+        ws.close()
+        ws = null
+      }
+      useStore.getState().setConnected(false)
+    }
   }
+}
+
+export function sendCommand(action, params = {}) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false
+  }
+
+  ws.send(JSON.stringify({ action, ...params }))
+  return true
+}
+
+export function __getSocketForTests() {
+  return ws
 }

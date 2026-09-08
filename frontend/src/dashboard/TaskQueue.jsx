@@ -1,55 +1,40 @@
 import useStore from '../store'
 
+function TaskRow({ task, state }) {
+  return (
+    <div className="rounded border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-700">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold text-slate-900">PKG-{String(task.id).padStart(3, '0')}</span>
+        <span className="rounded bg-white px-1.5 py-0.5 text-[10px] font-medium uppercase text-slate-500">{state}</span>
+      </div>
+      <p className="mt-1 font-mono text-[11px]">R({task.pickup[0]},{task.pickup[1]}) → D({task.dropoff[0]},{task.dropoff[1]})</p>
+    </div>
+  )
+}
+
 export default function TaskQueue() {
   const tasks = useStore((s) => s.tasks)
-  
+
+  const active = tasks.active || []
+  const pending = tasks.pending || []
+
   return (
-    <div className="bg-gray-800/90 rounded p-3 border border-gray-700/50 space-y-2 shadow-sm">
+    <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-1.5">
-          <span>📦</span> Task Allocation
-        </h2>
-        <span className="text-[11px] text-cyan-400 font-mono font-medium">
-          {tasks.completed_count}/{tasks.total_count} done
-        </span>
+        <h2 className="text-sm font-semibold text-slate-900">Task queue</h2>
+        <p className="text-xs text-slate-600">{tasks.completed_count}/{tasks.total_count} delivered</p>
       </div>
-      
-      {/* Active and Pending tasks */}
-      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
-        {tasks.active && tasks.active.length > 0 ? (
-          tasks.active.map((task) => (
-            <div
-              key={task.id}
-              className="flex items-center justify-between text-[11px] py-1 px-2 rounded bg-gray-900/70 border border-gray-700/40"
-            >
-              <span className="text-cyan-400 font-bold">#{task.id}</span>
-              <span className="text-gray-300 font-mono text-[10px]">
-                ({task.pickup[0]},{task.pickup[1]}) → ({task.dropoff[0]},{task.dropoff[1]})
-              </span>
-              <span className="text-yellow-400 font-bold text-[10px]">R{task.assigned_to}</span>
-            </div>
-          ))
-        ) : null}
-        
-        {tasks.pending && tasks.pending.map((task) => (
-          <div
-            key={task.id}
-            className="flex items-center justify-between text-[11px] py-1 px-2 rounded bg-gray-900/30 border border-gray-800/40 opacity-60"
-          >
-            <span className="text-gray-400">#{task.id}</span>
-            <span className="text-gray-400 font-mono text-[10px]">
-              ({task.pickup[0]},{task.pickup[1]}) → ({task.dropoff[0]},{task.dropoff[1]})
-            </span>
-            <span className="text-gray-500 text-[10px] italic">pending</span>
-          </div>
-        ))}
-        
-        {(!tasks.active || tasks.active.length === 0) && (!tasks.pending || tasks.pending.length === 0) && (
-          <div className="text-center py-2 text-gray-500 text-[11px]">
-            No pending tasks
-          </div>
-        )}
+
+      <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+        <p className="font-semibold text-slate-900">Workflow</p>
+        <p className="mt-1">RECEIVE → PICK UP → TRANSPORT → DELIVER</p>
       </div>
-    </div>
+
+      <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+        {active.map((task) => <TaskRow key={`active-${task.id}`} task={task} state={`R${task.assigned_to}`} />)}
+        {pending.map((task) => <TaskRow key={`pending-${task.id}`} task={task} state="pending" />)}
+        {!active.length && !pending.length && <p className="py-4 text-center text-xs text-slate-500">No queued tasks.</p>}
+      </div>
+    </section>
   )
 }

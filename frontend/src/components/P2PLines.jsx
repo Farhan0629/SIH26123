@@ -57,7 +57,7 @@ export default function P2PLines() {
         const geo = new THREE.BufferGeometry().setFromPoints(points)
         return (
           <line key={i} geometry={geo}>
-            <lineBasicMaterial color="#00ff88" transparent opacity={0.4} linewidth={1} />
+            <lineBasicMaterial color="#4b74b0" transparent opacity={0.42} linewidth={1} />
           </line>
         )
       })}

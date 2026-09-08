@@ -1,4 +1,5 @@
 import React from 'react'
+import { Html } from '@react-three/drei'
 
 /**
  * Realistic Industrial Cargo Model
@@ -6,6 +7,7 @@ import React from 'react'
  * reinforced seam tape, dual black poly tension straps, and shipping barcode label.
  */
 export default function CargoBox({ taskId, position = [0, 0, 0], scale = 1, rotation = [0, 0, 0] }) {
+  const packageCode = `PKG-${String(taskId || 0).padStart(3, '0')}`
   return (
     <group position={position} rotation={rotation} scale={scale}>
       {/* ─── Wooden Pallet Base ─── */}
@@ -72,6 +74,11 @@ export default function CargoBox({ taskId, position = [0, 0, 0], scale = 1, rota
           <planeGeometry args={[0.025, 0.015]} />
           <meshBasicMaterial color="#ef4444" />
         </mesh>
+        <Html position={[0, -0.03, 0.002]} transform>
+          <div className="bg-white/90 px-1 py-[1px] text-[9px] font-semibold text-slate-900">
+            {packageCode}
+          </div>
+        </Html>
       </group>
 
       {/* ─── Side Handling Symbol ─── */}
