@@ -1,92 +1,43 @@
-import { useEffect, useState } from 'react'
+import { Component, useEffect, useState } from 'react'
 import { connectWebSocket } from './websocket'
 import useStore from './store'
 import Scene from './components/Scene'
 import Dashboard from './dashboard/Dashboard'
-
+class SceneBoundary extends Component {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  render() {
+    if (this.state.failed) return <div className="scene-message" role="alert"><h2>3D view unavailable</h2><p>The live controls and task panels still work. Try a browser with WebGL enabled.</p><button onClick={() => this.setState({ failed: false })}>Retry 3D view</button></div>
+    return this.props.children
+  }
+}
 export default function App() {
   const connected = useStore((s) => s.connected)
-  const connectionState = useStore((s) => s.connectionState)
   const connectionError = useStore((s) => s.connectionError)
-  const setReducedMotion = useStore((s) => s.setReducedMotion)
-  const [showHowToWatch, setShowHowToWatch] = useState(true)
-
+  const setReduced = useStore((s) => s.setReducedMotion)
+  const sim = useStore((s) => s.sim)
+  const [help, setHelp] = useState(true)
+  useEffect(() => connectWebSocket(), [])
   useEffect(() => {
-    const disconnect = connectWebSocket()
-    return disconnect
-  }, [])
-
-  useEffect(() => {
-    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const apply = () => setReducedMotion(query.matches)
-    apply()
-    query.addEventListener('change', apply)
-    return () => query.removeEventListener('change', apply)
-  }, [setReducedMotion])
-
-  const connectionLabel = connected
-    ? 'Connected'
-    : connectionState === 'connecting'
-      ? 'Connecting…'
-      : connectionState === 'error'
-        ? 'Connection issue'
-        : 'Disconnected'
-
-  return (
-    <div className="h-screen w-screen overflow-hidden bg-slate-100 text-slate-900">
-      <div className="flex h-full flex-col">
-        <header className="border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur md:px-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Simulation / digital twin</p>
-              <h1 className="text-xl font-semibold text-slate-900">Warehouse Fleet Demonstrator</h1>
-            </div>
-            <div className="flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-sm">
-              <span className={`inline-block h-2.5 w-2.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-              <span>{connectionLabel}</span>
-            </div>
-          </div>
-        </header>
-
-        <main className="grid flex-1 grid-rows-[minmax(260px,1fr)_auto] overflow-hidden lg:grid-cols-[minmax(0,1fr)_420px] lg:grid-rows-1">
-          <section className="relative min-h-[260px] border-b border-slate-200 lg:border-b-0 lg:border-r">
-            <Scene />
-
-            {showHowToWatch && (
-              <div className="absolute left-3 top-3 z-30 max-w-[320px] rounded-lg border border-slate-300 bg-white/95 p-3 text-sm shadow">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold text-slate-900">How to watch</p>
-                    <ul className="mt-1 list-disc space-y-1 pl-4 text-[13px] text-slate-700">
-                      <li>Start demonstration, then choose a robot card.</li>
-                      <li>Use camera presets and shelf view toggles for visibility.</li>
-                      <li>Enable routes/P2P only when needed to avoid clutter.</li>
-                    </ul>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label="Dismiss help"
-                    className="min-h-11 min-w-11 rounded border border-slate-300 px-3 text-slate-600"
-                    onClick={() => setShowHowToWatch(false)}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {!connected && (
-              <div className="absolute bottom-3 left-3 z-30 rounded-lg border border-amber-300 bg-amber-50/95 px-3 py-2 text-sm text-amber-900 shadow">
-                {connectionError || 'Live data unavailable. Waiting for backend at port 8000.'}
-              </div>
-            )}
-          </section>
-
-          <aside className="min-h-0 overflow-y-auto bg-[#f8fafc]">
-            <Dashboard />
-          </aside>
-        </main>
-      </div>
-    </div>
-  )
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const apply = () => setReduced(media.matches)
+    apply(); media.addEventListener('change', apply)
+    return () => media.removeEventListener('change', apply)
+  }, [setReduced])
+  return <div className="demo-shell">
+    <header className="demo-header">
+      <div><p className="eyebrow">SIH 26123 · Warehouse intelligence</p><h1>Fleet in motion<span>Digital twin</span></h1></div>
+      <div className={`connection-badge ${connected ? 'online' : ''}`} role="status"><span aria-hidden="true">●</span> {connected ? (sim.running ? sim.paused ? 'Connected · Paused' : 'Connected · Running' : 'Connected · Ready') : 'Offline · Reconnecting'}</div>
+    </header>
+    <main className="demo-layout">
+      <section className="demo-viewport" aria-label="Interactive warehouse digital twin">
+        <SceneBoundary><Scene /></SceneBoundary>
+        {help && <div className="watch-guide"><div><strong>Watch a package move</strong><p>Start the demo. Select a unit, then choose Follow. Watch it reach, lift, carry, and place the labeled carton.</p></div><button aria-label="Dismiss viewing guide" onClick={() => setHelp(false)}>×</button></div>}
+        {connectionError && connected && <div className="connection-notice" role="status">{connectionError}</div>}
+        {!connected && <div className="connection-notice" role="status">{connectionError || 'Waiting for the simulation server on port 8000. No live values are fabricated.'}</div>}
+        <div className="viewport-caption"><span>RECEIVE → PICK UP → TRANSPORT → DELIVER</span><span>Drag to orbit · Scroll to zoom</span></div>
+      </section>
+      <aside className="demo-dashboard" aria-label="Fleet controls and telemetry"><Dashboard /></aside>
+    </main>
+  </div>
 }
