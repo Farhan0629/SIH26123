@@ -1,11 +1,38 @@
 @import "tailwindcss";
-
-html, body, #root {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background-color: #111827;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+:root { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; color:#243141; background:#f4f5f3; font-synthesis:none; }
+* { box-sizing:border-box; }
+html,body,#root { margin:0; width:100%; min-height:100%; }
+button,select { font:inherit; }
+button { cursor:pointer; }
+button:disabled { cursor:not-allowed; }
+button:focus-visible,select:focus-visible { outline:3px solid #2864b7; outline-offset:3px; }
+.demo-shell { height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+.demo-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:20px 28px; background:#fff; border-bottom:1px solid #d9dfdf; }
+.eyebrow { font-size:14px; color:#5b6977; margin:0 0 5px; letter-spacing:.06em; }
+.demo-header h1 { font-size:26px; line-height:1.2; font-weight:650; margin:0; letter-spacing:-.025em; }
+.demo-header h1 span { font-size:14px; font-weight:500; letter-spacing:0; color:#64727b; border-left:1px solid #ccd3d8; margin-left:14px; padding-left:14px; }
+.connection-badge { padding:8px 12px; border:1px solid #d2c1a4; background:#fbf3e4; color:#865819; border-radius:8px; font-size:14px; flex-shrink:0; }
+.connection-badge.online { background:#eef6f2; color:#256748; border-color:#bdcfbf; }
+.demo-layout { display:grid; grid-template-columns:minmax(0,1fr) 390px; min-height:0; flex:1; }
+.demo-viewport { position:relative; isolation:isolate; overflow:hidden; min-width:0; background:#e5ebe8; }
+.demo-dashboard { min-height:0; overflow-y:auto; background:#f6f7f5; border-left:1px solid #d9dfdf; }
+.demo-shell .text-xs,.demo-shell [class*="text-[1"],.demo-shell [class*="text-[9"],.demo-shell [class*="text-[8"] { font-size:14px !important; }
+.demo-dashboard p { overflow-wrap:anywhere; }
+.watch-guide { position:absolute; top:16px; left:16px; z-index:30; max-width:360px; display:flex; gap:12px; padding:14px; background:#fffffff2; border:1px solid #d5dedc; border-radius:10px; font-size:14px; box-shadow:0 3px 16px #1e35480b; }
+.watch-guide p { color:#536570; margin:6px 0 0; line-height:1.5; }
+.watch-guide button { min-width:44px; height:44px; font-size:24px; border:1px solid #d7dedd; border-radius:6px; }
+.viewport-caption { position:absolute; bottom:0; left:0; right:0; z-index:30; display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:12px 16px; background:#fffffff0; border-top:1px solid #d7dfdc; font-size:14px; color:#4b5f6c; pointer-events:none; }
+.connection-notice { position:absolute; left:16px; right:16px; bottom:68px; z-index:31; padding:12px 16px; background:#fff3df; color:#80520e; border:1px solid #dcc393; border-radius:8px; font-size:14px; }
+.scene-message { display:flex; height:100%; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding:24px; gap:12px; }
+.scene-message button { min-height:44px; padding:8px 16px; border:1px solid #7b91a3; border-radius:8px; }
+@media(max-width:1023px) {
+  .demo-shell { height:auto; min-height:100dvh; overflow:visible; }
+  .demo-header { flex-wrap:wrap; padding:16px; }
+  .demo-header h1 { font-size:23px; }
+  .demo-layout { display:flex; flex-direction:column; }
+  .demo-viewport { height:58svh; min-height:380px; }
+  .demo-dashboard { overflow:visible; border-left:0; border-top:1px solid #d9dfdf; }
+  .watch-guide { max-width:calc(100% - 32px); }
+  .viewport-caption { font-size:14px; }
 }
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; animation:none !important; transition:none !important; } }

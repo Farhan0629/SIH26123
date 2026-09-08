@@ -1,67 +1,27 @@
 import { create } from 'zustand'
-
-/*
- * Central state store. WebSocket client writes here, all components read from here.
- * Robot positions include prev_x/prev_y for smooth interpolation.
- */
 const useStore = create((set) => ({
-  // Connection state
-  connected: false,
-  
-  // Warehouse layout (set once on init)
-  warehouse: null,        // { width, height, grid, blocked }
-  
-  // Robot states (updated every tick from WebSocket)
-  robots: [],             // array of robot objects from backend
-  
-  // Task state
-  tasks: { pending: [], active: [], completed_count: 0, total_count: 0 },
-  
-  // Metrics
-  metrics: {
-    collisions: 0,
-    tasks_completed: 0,
-    avg_completion_ticks: 0,
-    baseline_avg_ticks: 0,
-    improvement_pct: 0,
-    episode_ticks: 0,
-  },
-  
-  // P2P message log (for visualizing connections)
-  p2pMessages: [],
-  
-  // Real-time fleet decision and activity events
-  events: [],
-  
-  // Simulation control
-  sim: { running: false, paused: false, speed: 1.0 },
-  
-  // Camera mode
-  cameraMode: 'orbit',     // 'orbit' | 'topdown' | 'follow' | 'focus'
-  followRobotId: null,
-  focusTarget: null,       // [x, y, z] to frame
-  
-  // Last update timestamp (for interpolation)
+  connected: false, connectionState: 'disconnected', connectionError: null,
+  warehouse: null, robots: [], tick: 0, sceneEpoch: 0,
+  tasks: { pending: [], active: [], completed: [], completed_count: 0, total_count: 0 },
+  metrics: { collisions: 0, tasks_completed: 0, avg_completion_ticks: 0, baseline_avg_ticks: 0, improvement_pct: 0, episode_ticks: 0 },
+  p2pMessages: [], events: [], sim: { running: false, paused: false, speed: 0.5 },
+  cameraMode: 'overview', cameraRevision: 0, followRobotId: null, selectedRobotId: null, focusTarget: null,
+  showRoutes: false, showP2P: false, shelfView: 'lowRack', reducedMotion: false,
   lastUpdateTime: Date.now(),
-  
-  // Actions
-  setConnected: (val) => set({ connected: val }),
-  
-  updateState: (data) => set((state) => ({
-    robots: data.robots || [],
-    tasks: data.tasks || state.tasks,
-    metrics: data.metrics || state.metrics,
-    p2pMessages: data.p2p_messages || [],
-    events: data.events || state.events,
-    sim: data.sim || state.sim,
-    lastUpdateTime: Date.now(),
-  })),
-  
-  setWarehouse: (wh) => set({ warehouse: wh }),
-  
-  setCameraMode: (mode) => set({ cameraMode: mode }),
-  setFollowRobot: (id) => set({ followRobotId: id, cameraMode: 'follow' }),
-  setFocusTarget: (target) => set({ focusTarget: target, cameraMode: 'focus' }),
+  setConnected: (connected) => set({ connected, connectionState: connected ? 'connected' : 'disconnected', connectionError: null }),
+  setConnectionState: (connectionState) => set({ connectionState }),
+  setConnectionError: (connectionError) => set({ connectionError, connectionState: 'error', connected: false }),
+  updateState: (data) => set((state) => {
+    const robots = data.robots ?? state.robots
+    const reset = typeof data.tick === 'number' && data.tick < state.tick
+    return { robots, tasks: data.tasks ?? state.tasks, metrics: data.metrics ?? state.metrics, p2pMessages: data.p2p_messages ?? state.p2pMessages, events: data.events ?? state.events, sim: data.sim ?? state.sim, tick: data.tick ?? state.tick, sceneEpoch: state.sceneEpoch + (reset ? 1 : 0), selectedRobotId: robots.some((r) => r.id === state.selectedRobotId) ? state.selectedRobotId : robots[0]?.id ?? null, lastUpdateTime: Date.now() }
+  }),
+  setWarehouse: (warehouse) => set({ warehouse }),
+  setCameraMode: (cameraMode) => set((s) => ({ cameraMode, cameraRevision: s.cameraRevision + 1 })),
+  setFollowRobot: (id) => set((s) => ({ selectedRobotId: id, followRobotId: id, cameraMode: 'follow', cameraRevision: s.cameraRevision + 1 })),
+  setFocusTarget: (focusTarget) => set((s) => ({ focusTarget, cameraMode: 'focus', cameraRevision: s.cameraRevision + 1 })),
+  selectRobot: (id) => set({ selectedRobotId: id, followRobotId: id }),
+  setShowRoutes: (showRoutes) => set({ showRoutes }), setShowP2P: (showP2P) => set({ showP2P }),
+  setShelfView: (shelfView) => set({ shelfView }), setReducedMotion: (reducedMotion) => set({ reducedMotion }),
 }))
-
 export default useStore

@@ -1,64 +1,61 @@
-const ROBOT_COLORS = ['#00f0ff', '#f43f5e', '#eab308', '#10b981', '#a855f7']
+import useStore from '../store'
+import { getRobotNextDestination, getRobotStatusMeta } from '../utils/simulationState.js'
+
+const ACCENTS = ['#315c9f', '#6a86b8', '#3f6aaf', '#506fa8', '#7a8fb9']
 
 export default function RobotStatus({ robot }) {
-  const color = ROBOT_COLORS[(robot.id - 1) % ROBOT_COLORS.length]
-  const batteryColor = robot.battery > 50 ? '#22c55e' : robot.battery > 20 ? '#eab308' : '#ef4444'
-  const isCarrying = Boolean(robot.has_cargo || robot.carrying)
+  const selectedRobotId = useStore((s) => s.selectedRobotId)
+  const selectRobot = useStore((s) => s.selectRobot)
+  const setFollowRobot = useStore((s) => s.setFollowRobot)
+
+  const selected = selectedRobotId === robot.id
+  const accent = ACCENTS[(robot.id - 1) % ACCENTS.length]
+  const status = getRobotStatusMeta(robot)
+  const destination = getRobotNextDestination(robot)
 
   return (
-    <div className="bg-gray-800/90 rounded-lg p-3 text-xs border border-gray-700/50 shadow-sm space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="font-bold text-sm" style={{ color }}>AMR-{robot.id}</span>
-          {isCarrying ? (
-            <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-blue-950 text-blue-300 border border-blue-500/50 flex items-center gap-1">
-              <span>📦</span>
-              <span>Box #{robot.carrying_task_id || robot.task?.id}</span>
-            </span>
-          ) : (
-            <span className="text-[10px] text-gray-500 italic">No Cargo</span>
-          )}
-        </div>
-        <span
-          className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
-          style={{
-            background:
-              robot.status === 'yielding'
-                ? '#78350f'
-                : robot.status === 'idle'
-                ? '#374151'
-                : robot.status === 'waiting'
-                ? '#991b1b'
-                : robot.status === 'charging'
-                ? '#065f46'
-                : '#1e3a5f',
-            color: robot.status === 'yielding' ? '#fde68a' : robot.status === 'waiting' ? '#fca5a5' : '#e2e8f0',
-          }}
+    <article
+      className={`rounded-lg border bg-white p-3 shadow-sm transition ${selected ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'}`}
+      aria-label={`Robot ${robot.id}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => selectRobot(robot.id)}
+          className="min-h-11 min-w-11 text-left"
         >
-          {robot.status}
+          <p className="text-sm font-semibold" style={{ color: accent }}>UNIT-{String(robot.id).padStart(2, '0')}</p>
+          <p className="text-xs text-slate-500">{status.label}</p>
+        </button>
+        <button
+          type="button"
+          onClick={() => setFollowRobot(robot.id)}
+          className="min-h-11 rounded-md border border-slate-300 px-3 text-xs font-medium text-slate-700"
+        >
+          Follow
+        </button>
+      </div>
+
+      <div className="mt-2 h-2 rounded-full bg-slate-200">
+        <div
+          className="h-2 rounded-full bg-emerald-500"
+          style={{ width: `${Math.max(4, Math.min(100, robot.battery || 0))}%` }}
+        />
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-600">
+        <p>Battery <span className="font-semibold text-slate-900">{Math.round(robot.battery)}%</span></p>
+        <p>Completed <span className="font-semibold text-slate-900">{robot.tasks_completed}</span></p>
+        <p>Location <span className="font-semibold text-slate-900">({robot.x},{robot.y})</span></p>
+        <p>{robot.has_cargo ? `Package PKG-${String(robot.carrying_task_id || robot.task?.id || 0).padStart(3, '0')}` : 'No package'}</p>
+      </div>
+
+      <p className="mt-2 text-xs text-slate-600">
+        Next destination:{' '}
+        <span className="font-semibold text-slate-900">
+          {destination ? `${destination.type} (${destination.coordinate[0]},${destination.coordinate[1]})` : 'Awaiting task'}
         </span>
-      </div>
-
-      {/* Battery bar */}
-      <div className="flex items-center gap-2">
-        <span className="text-gray-400 w-14 font-mono text-[11px]">🔋 {robot.battery}%</span>
-        <div className="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
-          <div
-            className="h-2 rounded-full transition-all duration-300"
-            style={{
-              width: `${Math.min(100, Math.max(0, robot.battery))}%`,
-              backgroundColor: batteryColor,
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Position + metrics */}
-      <div className="text-gray-400 flex justify-between font-mono text-[10px] pt-0.5 border-t border-gray-700/40">
-        <span>📍 ({robot.x}, {robot.y})</span>
-        <span>✅ {robot.tasks_completed} done</span>
-        <span>⏱ {robot.decision_ms}ms</span>
-      </div>
-    </div>
+      </p>
+    </article>
   )
 }
