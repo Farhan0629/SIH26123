@@ -1,252 +1,127 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
-import * as THREE from 'three'
 import useStore from '../store'
-import PathTrail from './PathTrail'
 import CargoBox from './CargoBox'
-import { getRobotStatusMeta, getRobotNextDestination } from '../utils/simulationState.js'
+import PathTrail from './PathTrail'
+import { getRobotStatusMeta } from '../utils/simulationState.js'
+import { RIG, headingToYaw, angleDelta, createMotion, queueMotion, advanceMotion, transferPose } from '../utils/presentation.js'
 
-const ACCENTS = ['#315c9f', '#6a86b8', '#3f6aaf', '#506fa8', '#7a8fb9']
-const DARK = '#1f2937'
-const SHELL = '#dfe5ee'
-const JOINT = '#334155'
+const ACCENTS = ['#2864b7', '#98702a', '#398270', '#8551a2', '#b24e5e']
+const SHELL = '#e5eaf0', JOINT = '#243141'
+function Shell({ at = [0, 0, 0], size = [1, 1, 1], color = SHELL }) {
+  return <mesh position={at} scale={size} castShadow><sphereGeometry args={[1, 12, 10]} /><meshStandardMaterial color={color} roughness={0.44} metalness={0.3} /></mesh>
+}
+function Joint({ at = [0, 0, 0], radius = 0.05 }) {
+  return <mesh position={at}><sphereGeometry args={[radius, 10, 8]} /><meshStandardMaterial color={JOINT} metalness={0.6} roughness={0.4} /></mesh>
+}
+function Arm({ side, upper, elbow, color }) {
+  return <group position={[side * 0.27, RIG.shoulder, 0]}>
+    <Joint radius={0.075} />
+    <group ref={upper} rotation={[0, 0, -side * 0.1]}>
+      <Shell at={[0, -0.13, 0]} size={[0.066, 0.145, 0.071]} />
+      <Shell at={[0, -0.05, 0.04]} size={[0.058, 0.064, 0.038]} color={color} />
+      <group ref={elbow} position={[0, -0.29, 0]}>
+        <Joint radius={0.05} />
+        <Shell at={[0, -0.11, 0]} size={[0.055, 0.115, 0.059]} />
+        <Joint at={[0, -0.23, 0]} radius={0.035} />
+        <mesh position={[0, -0.27, 0.025]} castShadow><boxGeometry args={[0.075, 0.07, 0.07]} /><meshStandardMaterial color={JOINT} /></mesh>
+        {[-1, 1].map((s) => <mesh key={s} position={[s * 0.029, -0.285, 0.074]}><boxGeometry args={[0.014, 0.036, 0.056]} /><meshStandardMaterial color="#a1aebb" metalness={0.7} roughness={0.3} /></mesh>)}
+      </group>
+    </group>
+  </group>
+}
+function Leg({ side, hip, knee }) {
+  return <group position={[side * 0.125, RIG.hip, 0]}>
+    <Joint radius={0.073} />
+    <group ref={hip}>
+      <Shell at={[0, -0.16, 0]} size={[0.075, 0.17, 0.083]} />
+      <group ref={knee} position={[0, -RIG.upperLeg, 0]}>
+        <Joint radius={0.055} />
+        <Shell at={[0, -0.02, 0.044]} size={[0.056, 0.073, 0.04]} color="#94a4b6" />
+        <Shell at={[0, -0.17, 0]} size={[0.059, 0.165, 0.062]} />
+        <Joint at={[0, -RIG.lowerLeg, 0]} radius={0.042} />
+        <Shell at={[0, -RIG.lowerLeg - 0.05, 0.055]} size={[0.084, 0.055, 0.15]} color={JOINT} />
+      </group>
+    </group>
+  </group>
+}
 
 export default function Robot({ robot, selected = false, onSelect }) {
-  const groupRef = useRef()
-  const phaseRef = useRef(Math.random() * Math.PI * 2)
-  const leftArmRef = useRef()
-  const rightArmRef = useRef()
-  const leftLegRef = useRef()
-  const rightLegRef = useRef()
-  const torsoRef = useRef()
-  const headRef = useRef()
-
-  const reducedMotion = useStore((s) => s.reducedMotion)
+  const root = useRef(), body = useRef(), cargo = useRef()
+  const leftArm = useRef(), rightArm = useRef(), leftElbow = useRef(), rightElbow = useRef()
+  const leftHip = useRef(), rightHip = useRef(), leftKnee = useRef(), rightKnee = useRef()
+  const motion = useRef(createMotion(robot.x + 0.5, robot.y + 0.5))
+  const phase = useRef(0), gaitStrength = useRef(0)
+  const yaw = useRef(headingToYaw(robot.heading))
+  const reduced = useStore((s) => s.reducedMotion)
   const sim = useStore((s) => s.sim)
-  const showRoutes = useStore((s) => s.showRoutes)
-
-  const accent = ACCENTS[(robot.id - 1) % ACCENTS.length]
+  const connected = useStore((s) => s.connected)
+  const routes = useStore((s) => s.showRoutes)
+  const color = ACCENTS[(robot.id - 1) % ACCENTS.length]
+  const handling = robot.handling
+  const hasPackage = Boolean(robot.has_cargo || handling)
+  const taskId = handling?.task_id || robot.carrying_task_id || robot.task?.id
   const status = getRobotStatusMeta(robot)
-  const destination = getRobotNextDestination(robot)
+  const paused = sim.paused || !connected
 
-  const shouldWalk = !reducedMotion && sim.running && !sim.paused && ['moving_to_pickup', 'moving_to_dropoff', 'moving_to_charge', 'yielding'].includes(robot.status)
-  const isCarrying = Boolean(robot.has_cargo)
+  useEffect(() => {
+    queueMotion(motion.current, robot.x + 0.5, robot.y + 0.5, 0.1 / Math.max(0.1, sim.speed), reduced)
+  }, [robot.x, robot.y, reduced, sim.speed])
 
-  const target = useMemo(() => new THREE.Vector3(), [])
-  const current = useMemo(() => new THREE.Vector3(robot.x + 0.5, 0, robot.y + 0.5), [robot.x, robot.y])
-
-  useFrame((_, delta) => {
-    if (!groupRef.current) return
-
-    target.set(robot.x + 0.5, 0, robot.y + 0.5)
-    if (current.distanceTo(target) > 2.2) {
-      current.copy(target)
-    } else {
-      current.lerp(target, Math.min(1, delta * 9))
+  useFrame((_, rawDelta) => {
+    if (!root.current) return
+    const delta = Math.min(rawDelta, 0.05)
+    const distance = advanceMotion(motion.current, delta, paused)
+    root.current.position.set(motion.current.x, 0, motion.current.z)
+    const desiredYaw = headingToYaw(handling ? 0 : robot.heading)
+    if (reduced) yaw.current = desiredYaw
+    else if (!paused) yaw.current += angleDelta(yaw.current, desiredYaw) * (1 - Math.exp(-14 * delta))
+    root.current.rotation.y = yaw.current
+    if (!paused) {
+      const moving = !reduced && !handling && distance > 0.0001
+      gaitStrength.current += ((moving ? 1 : 0) - gaitStrength.current) * (1 - Math.exp(-18 * delta))
+      phase.current += distance * 10
+      const swing = Math.sin(phase.current) * gaitStrength.current
+      leftHip.current.rotation.x = swing * 0.35
+      rightHip.current.rotation.x = -swing * 0.35
+      leftKnee.current.rotation.x = Math.max(0, -swing) * 0.55
+      rightKnee.current.rotation.x = Math.max(0, swing) * 0.55
+      body.current.position.y = 0
+      const pose = transferPose(handling)
+      const arm = hasPackage ? -0.28 - pose.reach * 0.24 : -swing * 0.4
+      leftArm.current.rotation.x = arm
+      rightArm.current.rotation.x = hasPackage ? arm : swing * 0.4
+      leftElbow.current.rotation.x = rightElbow.current.rotation.x = hasPackage ? -1.18 + pose.reach * 0.25 : -0.15
     }
-    groupRef.current.position.copy(current)
-
-    const targetRot = -robot.heading * (Math.PI / 180)
-    let diff = (targetRot - groupRef.current.rotation.y) % (Math.PI * 2)
-    if (diff < -Math.PI) diff += Math.PI * 2
-    if (diff > Math.PI) diff -= Math.PI * 2
-    groupRef.current.rotation.y += diff * Math.min(1, delta * 8)
-
-    const gait = shouldWalk ? Math.sin((phaseRef.current += delta * 8)) : 0
-    const carryingArm = isCarrying ? -0.95 : 0.2
-
-    if (leftArmRef.current) leftArmRef.current.rotation.x = carryingArm + (isCarrying ? 0.08 : gait * 0.5)
-    if (rightArmRef.current) rightArmRef.current.rotation.x = carryingArm + (isCarrying ? -0.08 : -gait * 0.5)
-    if (leftLegRef.current) leftLegRef.current.rotation.x = isCarrying ? gait * 0.16 : gait * 0.45
-    if (rightLegRef.current) rightLegRef.current.rotation.x = isCarrying ? -gait * 0.16 : -gait * 0.45
-    if (torsoRef.current) torsoRef.current.position.y = 0.78 + (shouldWalk ? Math.abs(gait) * 0.02 : 0)
-    if (headRef.current) headRef.current.rotation.x = shouldWalk ? Math.sin(phaseRef.current * 0.5) * 0.03 : 0
+    if (cargo.current) cargo.current.position.set(...transferPose(handling).position)
   })
 
-  return (
-    <>
-      <group ref={groupRef} position={[robot.x + 0.5, 0, robot.y + 0.5]} onClick={() => onSelect?.(robot.id)}>
-        {selected && (
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
-            <ringGeometry args={[0.42, 0.5, 40]} />
-            <meshBasicMaterial color={accent} transparent opacity={0.75} />
-          </mesh>
-        )}
-
-        <mesh position={[0, 0.06, 0]}>
-          <boxGeometry args={[0.38, 0.12, 0.26]} />
-          <meshStandardMaterial color={DARK} roughness={0.75} />
-        </mesh>
-
-        <group ref={torsoRef}>
-          <mesh position={[0, 0.8, 0]}>
-            <capsuleGeometry args={[0.14, 0.24, 8, 16]} />
-            <meshStandardMaterial color={SHELL} metalness={0.2} roughness={0.55} />
-          </mesh>
-          <mesh position={[0, 0.8, 0.11]}>
-            <boxGeometry args={[0.18, 0.22, 0.03]} />
-            <meshStandardMaterial color={accent} metalness={0.25} roughness={0.45} />
-          </mesh>
-        </group>
-
-        <mesh position={[0, 0.58, 0]}>
-          <boxGeometry args={[0.22, 0.08, 0.16]} />
-          <meshStandardMaterial color={JOINT} roughness={0.6} />
-        </mesh>
-
-        <group ref={headRef} position={[0, 1.08, 0]}>
-          <mesh>
-            <sphereGeometry args={[0.12, 18, 16]} />
-            <meshStandardMaterial color={SHELL} roughness={0.45} metalness={0.15} />
-          </mesh>
-          <mesh position={[0, 0.01, 0.095]}>
-            <boxGeometry args={[0.17, 0.07, 0.03]} />
-            <meshStandardMaterial color="#0f172a" emissive="#1e293b" emissiveIntensity={0.6} />
-          </mesh>
-          <mesh position={[-0.04, 0.01, 0.112]}>
-            <boxGeometry args={[0.015, 0.015, 0.005]} />
-            <meshBasicMaterial color="#93c5fd" />
-          </mesh>
-          <mesh position={[0.04, 0.01, 0.112]}>
-            <boxGeometry args={[0.015, 0.015, 0.005]} />
-            <meshBasicMaterial color="#93c5fd" />
-          </mesh>
-        </group>
-
-        <group position={[0, 0.92, 0]}>
-          <group position={[-0.16, 0, 0]}>
-            <mesh position={[0, -0.03, 0]}>
-              <sphereGeometry args={[0.04, 12, 12]} />
-              <meshStandardMaterial color={JOINT} />
-            </mesh>
-            <group ref={leftArmRef} position={[0, -0.03, 0]}>
-              <mesh position={[0, -0.13, 0]}>
-                <capsuleGeometry args={[0.03, 0.16, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.24, 0]}>
-                <sphereGeometry args={[0.03, 10, 10]} />
-                <meshStandardMaterial color={JOINT} />
-              </mesh>
-              <mesh position={[0, -0.32, 0]}>
-                <capsuleGeometry args={[0.025, 0.1, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.4, 0.03]}>
-                <boxGeometry args={[0.06, 0.035, 0.08]} />
-                <meshStandardMaterial color={DARK} />
-              </mesh>
-            </group>
-          </group>
-
-          <group position={[0.16, 0, 0]}>
-            <mesh position={[0, -0.03, 0]}>
-              <sphereGeometry args={[0.04, 12, 12]} />
-              <meshStandardMaterial color={JOINT} />
-            </mesh>
-            <group ref={rightArmRef} position={[0, -0.03, 0]}>
-              <mesh position={[0, -0.13, 0]}>
-                <capsuleGeometry args={[0.03, 0.16, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.24, 0]}>
-                <sphereGeometry args={[0.03, 10, 10]} />
-                <meshStandardMaterial color={JOINT} />
-              </mesh>
-              <mesh position={[0, -0.32, 0]}>
-                <capsuleGeometry args={[0.025, 0.1, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.4, 0.03]}>
-                <boxGeometry args={[0.06, 0.035, 0.08]} />
-                <meshStandardMaterial color={DARK} />
-              </mesh>
-            </group>
-          </group>
-        </group>
-
-        <group position={[0, 0.5, 0]}>
-          <group position={[-0.08, 0, 0]}>
-            <mesh>
-              <sphereGeometry args={[0.045, 12, 12]} />
-              <meshStandardMaterial color={JOINT} />
-            </mesh>
-            <group ref={leftLegRef}>
-              <mesh position={[0, -0.16, 0]}>
-                <capsuleGeometry args={[0.036, 0.18, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.29, 0]}>
-                <sphereGeometry args={[0.032, 10, 10]} />
-                <meshStandardMaterial color={JOINT} />
-              </mesh>
-              <mesh position={[0, -0.4, 0.02]}>
-                <capsuleGeometry args={[0.028, 0.12, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.49, 0.06]}>
-                <boxGeometry args={[0.1, 0.04, 0.16]} />
-                <meshStandardMaterial color={DARK} roughness={0.6} />
-              </mesh>
-            </group>
-          </group>
-
-          <group position={[0.08, 0, 0]}>
-            <mesh>
-              <sphereGeometry args={[0.045, 12, 12]} />
-              <meshStandardMaterial color={JOINT} />
-            </mesh>
-            <group ref={rightLegRef}>
-              <mesh position={[0, -0.16, 0]}>
-                <capsuleGeometry args={[0.036, 0.18, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.29, 0]}>
-                <sphereGeometry args={[0.032, 10, 10]} />
-                <meshStandardMaterial color={JOINT} />
-              </mesh>
-              <mesh position={[0, -0.4, 0.02]}>
-                <capsuleGeometry args={[0.028, 0.12, 6, 12]} />
-                <meshStandardMaterial color={SHELL} roughness={0.55} />
-              </mesh>
-              <mesh position={[0, -0.49, 0.06]}>
-                <boxGeometry args={[0.1, 0.04, 0.16]} />
-                <meshStandardMaterial color={DARK} roughness={0.6} />
-              </mesh>
-            </group>
-          </group>
-        </group>
-
-        {isCarrying && (
-          <group position={[0, 0.62, 0.22]}>
-            <CargoBox taskId={robot.carrying_task_id || robot.task?.id} scale={0.42} />
-          </group>
-        )}
-
-        <Html position={[0, 1.26, 0]} center distanceFactor={22}>
-          <button
-            type="button"
-            onClick={() => onSelect?.(robot.id)}
-            className={`rounded px-2 py-0.5 text-[11px] font-semibold shadow-sm ${selected ? 'bg-blue-700 text-white' : 'bg-slate-900/85 text-slate-100'}`}
-          >
-            UNIT-{String(robot.id).padStart(2, '0')}
-          </button>
-        </Html>
-
-        {selected && (
-          <Html position={[0, 1.5, 0]} center distanceFactor={16}>
-            <div className="rounded-md border border-slate-300/40 bg-white/90 px-2 py-1 text-[11px] text-slate-900 shadow-sm">
-              <div className="font-semibold">{status.label}</div>
-              <div className="text-slate-600">{destination ? `${destination.type} (${destination.coordinate[0]},${destination.coordinate[1]})` : 'Awaiting assignment'}</div>
-            </div>
-          </Html>
-        )}
+  return <>
+    <group ref={root} position={[robot.x + 0.5, 0, robot.y + 0.5]} onClick={(event) => { event.stopPropagation(); onSelect?.(robot.id) }}>
+      <mesh position={[0, 0.016, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.36, selected ? 0.43 : 0.38, 40]} /><meshBasicMaterial color={color} transparent opacity={selected ? 0.85 : 0.35} depthWrite={false} /></mesh>
+      <group ref={body}>
+        <Shell at={[0, 0.86, 0]} size={[0.21, 0.10, 0.135]} color={JOINT} />
+        <Shell at={[0, RIG.chest, 0]} size={[0.23, 0.25, 0.15]} />
+        <Shell at={[0, 1.22, 0.125]} size={[0.165, 0.135, 0.05]} color={color} />
+        <mesh position={[0, 1.08, 0.15]}><boxGeometry args={[0.18, 0.035, 0.012]} /><meshBasicMaterial color={handling ? '#f2b544' : '#9ed8d3'} /></mesh>
+        <Shell at={[0, 1.18, -0.15]} size={[0.16, 0.18, 0.072]} color={JOINT} />
+        <Joint at={[0, 1.43, 0]} radius={0.065} />
+        <Shell at={[0, RIG.head, 0]} size={[0.165, 0.17, 0.145]} />
+        <Shell at={[0, RIG.head + 0.005, 0.113]} size={[0.137, 0.078, 0.06]} color="#101e30" />
+        {[-1, 1].map((s) => <mesh key={s} position={[s * 0.064, RIG.head + 0.014, 0.173]}><boxGeometry args={[0.048, 0.016, 0.01]} /><meshBasicMaterial color="#8bd4f7" /></mesh>)}
+        <Arm side={-1} upper={leftArm} elbow={leftElbow} color={color} />
+        <Arm side={1} upper={rightArm} elbow={rightElbow} color={color} />
+        <Leg side={-1} hip={leftHip} knee={leftKnee} />
+        <Leg side={1} hip={rightHip} knee={rightKnee} />
+        {hasPackage && <group ref={cargo} position={transferPose(handling).position}><CargoBox taskId={taskId} scale={1} /></group>}
       </group>
-
-      {showRoutes && robot.planned_path?.length > 0 && (
-        <PathTrail path={robot.planned_path} color={accent} />
-      )}
-    </>
-  )
+      <Html position={[0, 1.93, 0]} center zIndexRange={[12, 0]} style={{ pointerEvents: 'none' }}>
+        <button onClick={() => onSelect?.(robot.id)} aria-label={`Inspect unit ${robot.id}`} style={{ pointerEvents: 'auto', whiteSpace: 'nowrap', minHeight: 44, padding: '6px 10px', fontSize: 14, borderRadius: 8, border: `2px solid ${color}`, background: selected ? color : '#fff', color: selected ? '#fff' : '#243141' }}>
+          UNIT {String(robot.id).padStart(2, '0')}{selected ? ` · ${handling ? transferPose(handling).label : status.label}` : ''}
+        </button>
+      </Html>
+    </group>
+    {routes && robot.planned_path?.length > 0 && <PathTrail path={robot.planned_path} color={color} />}
+  </>
 }
