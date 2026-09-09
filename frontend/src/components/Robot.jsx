@@ -4,7 +4,6 @@ import { Html } from '@react-three/drei'
 import useStore from '../store'
 import CargoBox from './CargoBox'
 import PathTrail from './PathTrail'
-import { getRobotStatusMeta } from '../utils/simulationState.js'
 import { RIG, headingToYaw, angleDelta, createMotion, queueMotion, advanceMotion, transferPose } from '../utils/presentation.js'
 
 const ACCENTS = ['#2864b7', '#98702a', '#398270', '#8551a2', '#b24e5e']
@@ -63,7 +62,6 @@ export default function Robot({ robot, selected = false, onSelect }) {
   const handling = robot.handling
   const hasPackage = Boolean(robot.has_cargo || handling)
   const taskId = handling?.task_id || robot.carrying_task_id || robot.task?.id
-  const status = getRobotStatusMeta(robot)
   const paused = sim.paused || !connected
   const name = robot.name || `UNIT ${String(robot.id).padStart(2, '0')}`
   const offline = (network?.partitioned ?? []).includes(robot.id)
@@ -119,9 +117,12 @@ export default function Robot({ robot, selected = false, onSelect }) {
         <Leg side={1} hip={rightHip} knee={rightKnee} />
         {hasPackage && <group ref={cargo} position={transferPose(handling).position}><CargoBox taskId={taskId} scale={1} /></group>}
       </group>
-      <Html position={[0, 1.93, 0]} center zIndexRange={[12, 0]} style={{ pointerEvents: 'none' }}>
-        <button onClick={() => onSelect?.(robot.id)} aria-label={`Inspect ${name}${offline ? ', radio offline' : ''}`} style={{ pointerEvents: 'auto', whiteSpace: 'nowrap', minHeight: 44, padding: '6px 10px', fontSize: 14, borderRadius: 8, border: `2px solid ${offline ? '#e0546a' : color}`, background: selected ? color : '#fff', color: selected ? '#fff' : '#243141' }}>
-          {name}{offline ? ' · no radio' : ''}{selected ? ` · ${handling ? transferPose(handling).label : status.label}` : ''}
+      {/* The only screen-space label left in the scene: the unit's name, kept
+          small. Live status moved to the dashboard inspector, and every other
+          floor label is now a 3D sign. */}
+      <Html position={[0, 1.82, 0]} center zIndexRange={[12, 0]} style={{ pointerEvents: 'none' }}>
+        <button onClick={() => onSelect?.(robot.id)} aria-label={`Inspect ${name}${offline ? ', radio offline' : ''}`} style={{ pointerEvents: 'auto', whiteSpace: 'nowrap', padding: '2px 8px', fontSize: 11, lineHeight: '16px', fontWeight: 600, letterSpacing: '0.02em', borderRadius: 999, border: `1px solid ${offline ? '#e0546a' : color}`, background: selected ? color : '#ffffffee', color: selected ? '#ffffff' : '#243141', boxShadow: '0 1px 4px #15243826' }}>
+          {name}{offline ? ' ✕' : ''}
         </button>
       </Html>
     </group>

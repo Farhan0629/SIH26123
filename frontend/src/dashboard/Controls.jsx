@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { sendCommand } from '../websocket'
 import useStore from '../store'
 
@@ -17,9 +18,18 @@ export default function Controls() {
   const setShowP2P = useStore((s) => s.setShowP2P)
   const shelfView = useStore((s) => s.shelfView)
   const setShelfView = useStore((s) => s.setShelfView)
+  const placeMode = useStore((s) => s.placeMode)
+  const setPlaceMode = useStore((s) => s.setPlaceMode)
 
   const partitioned = network?.partitioned ?? []
   const blockedCount = warehouse?.blocked?.length ?? 0
+  // Barriers may only be edited while the floor is still: paused, or not
+  // started yet. The server enforces the same rule.
+  const canEditBlocks = !sim.running || sim.paused
+
+  useEffect(() => {
+    if (!canEditBlocks && placeMode) setPlaceMode(false)
+  }, [canEditBlocks, placeMode, setPlaceMode])
 
   const sendSafe = (action, params) => {
     if (!connected) return
@@ -69,17 +79,21 @@ export default function Controls() {
       <div className="space-y-1 rounded-md border border-amber-200 bg-amber-50/60 p-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Disruption drills</p>
         <p className="text-[11px] leading-snug text-slate-600">
-          Block an aisle to force live re-routing, or drop a unit&apos;s radio to prove the fleet keeps
-          coordinating without a central server.
+          {canEditBlocks
+            ? placeMode
+              ? 'Placing barriers: drag across the floor to close cells, drag over a barrier to reopen it. Camera rotation is held while placing.'
+              : 'Pick “Place barriers” and draw blockages straight onto the floor, then resume and watch the fleet re-route around them.'
+            : 'Pause the demonstration to place or remove barriers. Radio dead zones can be toggled at any time.'}
         </p>
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
-            disabled={!connected}
-            onClick={() => sendSafe('block_aisle')}
-            className={`${BUTTON} border-amber-400 bg-white text-amber-800 disabled:cursor-not-allowed disabled:opacity-50`}
+            disabled={!connected || !canEditBlocks}
+            aria-pressed={placeMode}
+            onClick={() => setPlaceMode(!placeMode)}
+            className={`${BUTTON} ${placeMode ? 'border-amber-500 bg-amber-600 text-white' : 'border-amber-400 bg-white text-amber-800'} disabled:cursor-not-allowed disabled:opacity-50`}
           >
-            Block an aisle
+            {placeMode ? 'Done placing' : 'Place barriers'}
           </button>
           <button
             type="button"
@@ -90,6 +104,15 @@ export default function Controls() {
             Clear blockages{blockedCount ? ` (${blockedCount})` : ''}
           </button>
         </div>
+        <button
+          type="button"
+          disabled={!connected || !canEditBlocks}
+          onClick={() => sendSafe('block_aisle')}
+          className={`${BUTTON} w-full border-amber-300 bg-white text-amber-800 disabled:cursor-not-allowed disabled:opacity-50`}
+          title="Let the server pick a cell on a unit's own planned route"
+        >
+          Auto-block a route
+        </button>
         <p className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700">Wi-Fi dead zone</p>
         <div className="grid grid-cols-3 gap-2">
           {robots.map((robot) => {

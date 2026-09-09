@@ -7,13 +7,18 @@ is created mid-episode, so nothing appears out of nowhere on screen.
 
 Two disruption drills are exposed over the socket so a judge can trigger the
 hard requirements live:
-  * block_aisle      - drops an obstacle in front of a moving unit; the fleet
-                       gossips the hazard over the mesh and each unit replans
-                       on its own onboard A*.
+  * block_aisle      - closes an aisle cell. Cells are chosen by hand from the
+                       dashboard (click or drag on the floor) while the demo is
+                       paused, or picked by the server when no coordinates are
+                       sent. The fleet gossips the hazard over the mesh and each
+                       unit replans on its own onboard A* once the floor runs.
   * toggle_partition - simulates a Wi-Fi dead zone. The unit stops receiving
                        and sending mesh traffic and must keep itself safe on
                        onboard sensing alone, which is what "no central server"
                        actually has to survive.
+
+Barrier edits are only accepted while the simulation is paused or has not been
+started, so an obstacle can never appear underneath a unit that is mid-step.
 """
 import asyncio
 import json
@@ -52,6 +57,11 @@ def find_robot(robot_id):
         if robot.id == robot_id:
             return robot
     raise ValueError(f"No unit with id {robot_id}")
+
+
+def floor_is_still():
+    """True when barriers may be edited: paused, or not started yet."""
+    return not sim_state["running"] or sim_state["paused"]
 
 
 def pick_choke_cell():
@@ -213,10 +223,16 @@ async def websocket_endpoint(ws: WebSocket):
                     sim_state["speed"] = speed
                     await broadcast_state(build_state_message(sim_state["tick"]))
                 elif action in ("block_aisle", "unblock_aisle"):
-                    # Coordinates stay supported for scripted demos, but the
-                    # dashboard button sends no coordinates at all: the server
-                    # then picks a cell on a unit's own route so the drill is
-                    # guaranteed to force a live reroute.
+                    # Barriers are laid out by hand: the dashboard sends one
+                    # command per cell as the operator clicks or drags across
+                    # the floor. Editing is only legal while the floor is still,
+                    # which the client also enforces - this is the server-side
+                    # guarantee that nothing appears under a moving unit.
+                    if not floor_is_still():
+                        raise ValueError("Pause the demonstration before editing barriers")
+                    # Coordinates stay optional: with none, the server picks a
+                    # cell on a unit's own route so the drill is guaranteed to
+                    # force a live reroute on resume.
                     if command.get("x") is None and action == "block_aisle":
                         cell = pick_choke_cell()
                         if cell is None:
@@ -264,7 +280,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/")
 def root():
-    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.3-disruption-drills"}
+    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.4-manual-barriers"}
 
 @app.get("/api/warehouse")
 def get_warehouse():

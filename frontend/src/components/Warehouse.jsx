@@ -1,9 +1,10 @@
-import { useLayoutEffect, useMemo, useRef } from 'react'
-import { Html } from '@react-three/drei'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Object3D } from 'three'
 import useStore from '../store'
 import CargoBox from './CargoBox'
 import BlockedAisle from './BlockedAisle'
+import Sign from './Signage'
+import { sendCommand } from '../websocket'
 import { mapCargoLifecycle } from '../utils/simulationState.js'
 function Batch({ items, color, opacity = 1 }) {
   const ref = useRef()
@@ -17,12 +18,10 @@ function Batch({ items, color, opacity = 1 }) {
   if (!items.length) return null
   return <instancedMesh key={items.length} ref={ref} args={[null, null, items.length]} castShadow={opacity === 1} receiveShadow><boxGeometry args={[1, 1, 1]} /><meshStandardMaterial color={color} roughness={0.7} metalness={0.15} transparent={opacity < 1} opacity={opacity} depthWrite={opacity === 1} /></instancedMesh>
 }
-function Label({ children, at, tone = '#254f82' }) {
-  return <Html position={at} center zIndexRange={[8, 0]} style={{ pointerEvents: 'none' }}><div style={{ background: '#fffffff0', borderLeft: `4px solid ${tone}`, borderRadius: 6, padding: '6px 10px', fontSize: 14, color: '#243141', whiteSpace: 'nowrap', boxShadow: '0 2px 8px #15243812' }}>{children}</div></Html>
-}
 // Twelve fixed tables: six LOADING tables start with one package each, six
 // DELIVERY tables start empty. Packages are never created mid-episode, so an
 // empty slot outline shows exactly where a package is still expected.
+// Each table carries a hung 3D sign beside it instead of a floating HTML card.
 function Station({ cell, index, kind, items, handling }) {
   const [x, z] = cell
   const pickup = kind === 'pickup'
@@ -41,7 +40,72 @@ function Station({ cell, index, kind, items, handling }) {
     <mesh position={[0.4, 0.78, -0.34]}><boxGeometry args={[0.32, 0.025, 0.025]} /><meshBasicMaterial color={tone} /></mesh>
     {!busy && !item && <mesh position={[0.40, 0.776, 0]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[0.26, 0.4]} /><meshBasicMaterial color={tone} transparent opacity={0.34} depthWrite={false} /></mesh>}
     {!busy && item && <CargoBox taskId={item.taskId} position={[0.40, 0.91, 0]} rotation={[0, Math.PI / 2, 0]} />}
-    <Label at={[0.2, 2.12 + (index % 2) * 0.62, 0]} tone={tone}><strong>{pickup ? 'LOADING' : 'DELIVERY'} {index + 1}</strong><br />{state} · ({x},{z})</Label>
+    <Sign at={[0.4, 2.14, 0]} title={`${pickup ? 'LOADING' : 'DELIVERY'} ${index + 1}`} subtitle={state} tone={tone} width={1.7} hang={0.55} />
+  </group>
+}
+// Hand placement of blockages. Only mounted while the demo is paused (or not
+// started yet), so a judge can never drop an obstacle under a moving unit.
+// Press on a free aisle cell and drag to paint a barrier; press on an existing
+// barrier and drag to erase. The server re-validates every cell.
+function BlockPlacement({ width, height }) {
+  const [hover, setHover] = useState(null)
+  const drag = useRef(null)
+  useEffect(() => {
+    const release = () => { drag.current = null }
+    window.addEventListener('pointerup', release)
+    window.addEventListener('pointercancel', release)
+    return () => { window.removeEventListener('pointerup', release); window.removeEventListener('pointercancel', release) }
+  }, [])
+  const cellState = (x, y) => {
+    const { warehouse, robots } = useStore.getState()
+    if (!warehouse?.grid) return 'invalid'
+    if (x < 0 || y < 0 || x >= warehouse.width || y >= warehouse.height) return 'invalid'
+    if (warehouse.grid[y][x] !== 0) return 'invalid'
+    if ((warehouse.blocked || []).some(([bx, by]) => bx === x && by === y)) return 'blocked'
+    if (robots.some((robot) => robot.x === x && robot.y === y)) return 'invalid'
+    return 'free'
+  }
+  const apply = (x, y) => {
+    const mode = drag.current?.mode
+    const state = cellState(x, y)
+    if (mode === 'place' && state === 'free') sendCommand('block_aisle', { x, y })
+    if (mode === 'erase' && state === 'blocked') sendCommand('unblock_aisle', { x, y })
+  }
+  const at = (event) => [Math.floor(event.point.x), Math.floor(event.point.z)]
+  const remember = (x, y) => {
+    const key = `${x}:${y}`
+    if (drag.current.seen.has(key)) return false
+    drag.current.seen.add(key)
+    return true
+  }
+  return <group>
+    <mesh
+      position={[width / 2, 0.02, height / 2]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      onPointerDown={(event) => {
+        event.stopPropagation()
+        const [x, y] = at(event)
+        drag.current = { mode: cellState(x, y) === 'blocked' ? 'erase' : 'place', seen: new Set() }
+        remember(x, y)
+        apply(x, y)
+        setHover([x, y, cellState(x, y)])
+      }}
+      onPointerMove={(event) => {
+        const [x, y] = at(event)
+        setHover((previous) => (previous && previous[0] === x && previous[1] === y ? previous : [x, y, cellState(x, y)]))
+        if (!drag.current) return
+        if (remember(x, y)) apply(x, y)
+      }}
+      onPointerUp={() => { drag.current = null }}
+      onPointerOut={() => { setHover(null) }}
+    >
+      <planeGeometry args={[width, height]} />
+      <meshBasicMaterial color="#2864b7" transparent opacity={0.05} depthWrite={false} />
+    </mesh>
+    {hover && <mesh position={[hover[0] + 0.5, 0.028, hover[1] + 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
+      <planeGeometry args={[0.94, 0.94]} />
+      <meshBasicMaterial color={hover[2] === 'free' ? '#dc2626' : hover[2] === 'blocked' ? '#facc15' : '#94a3b8'} transparent opacity={0.5} depthWrite={false} />
+    </mesh>}
   </group>
 }
 export default function Warehouse() {
@@ -49,6 +113,8 @@ export default function Warehouse() {
   const tasks = useStore((s) => s.tasks)
   const robots = useStore((s) => s.robots)
   const shelfView = useStore((s) => s.shelfView)
+  const placeMode = useStore((s) => s.placeMode)
+  const sim = useStore((s) => s.sim)
   const batches = useMemo(() => {
     const result = { posts: [], rails: [], decks: [], boxes: [], tape: [], walls: [], lanes: [] }
     if (!warehouse?.grid) return result
@@ -82,6 +148,7 @@ export default function Warehouse() {
   const { width, height } = warehouse
   const opacity = shelfView === 'xray' ? 0.18 : 1
   const handling = robots.map((r) => r.handling).filter(Boolean)
+  const placing = placeMode && (!sim.running || sim.paused)
   return <group>
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[width / 2, -0.005, height / 2]} receiveShadow><planeGeometry args={[width + 0.8, height + 0.8]} /><meshStandardMaterial color="#d5dbd8" roughness={0.86} /></mesh>
     <gridHelper args={[20, 20, '#aebbb9', '#c0cbc7']} position={[width / 2, 0.002, height / 2]} />
@@ -89,11 +156,16 @@ export default function Warehouse() {
     {[5, 11, 17].map((x) => <group key={x} position={[x, 0, 0.98]}>
       <mesh position={[0, 1.27, 0.04]}><boxGeometry args={[2.5, 2.38, 0.045]} /><meshStandardMaterial color="#8696a5" roughness={0.65} /></mesh>
       {Array.from({ length: 9 }, (_, i) => <mesh key={i} position={[0, 0.2 + i * 0.26, 0.075]}><boxGeometry args={[2.43, 0.02, 0.02]} /><meshStandardMaterial color="#627486" /></mesh>)}
-      <Label at={[0, 2.78, 0.1]}>WAREHOUSE · BAY {Math.round((x + 1) / 6)}</Label>
+      <Sign at={[0, 1.95, 0.11]} title={`BAY ${Math.round((x + 1) / 6)}`} width={2.1} billboard={false} />
     </group>)}
     {(warehouse.pickups || []).map((cell, i) => <Station key={`p${i}`} cell={cell} index={i} kind="pickup" handling={handling} items={cargo.pickupCargo.filter((t) => t.pickup[0] === cell[0] && t.pickup[1] === cell[1])} />)}
     {(warehouse.dropoffs || []).map((cell, i) => <Station key={`d${i}`} cell={cell} index={i} kind="dropoff" handling={handling} items={cargo.deliveredCargo.filter((t) => t.dropoff[0] === cell[0] && t.dropoff[1] === cell[1])} />)}
-    {(warehouse.chargers || []).map(([x, z], i) => <group key={`c${i}`} position={[x + 0.5, 0, z + 0.5]}><mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}><ringGeometry args={[0.29, 0.41, 32]} /><meshBasicMaterial color="#338969" /></mesh><Label at={[0, 2.1, 0]} tone="#297359">CHARGING {i + 1}</Label></group>)}
+    {(warehouse.chargers || []).map(([x, z], i) => <group key={`c${i}`} position={[x + 0.5, 0, z + 0.5]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}><ringGeometry args={[0.29, 0.41, 32]} /><meshBasicMaterial color="#338969" /></mesh>
+      <mesh position={[0, 0.26, 0]}><boxGeometry args={[0.035, 0.52, 0.035]} /><meshStandardMaterial color="#7c8b9a" metalness={0.4} roughness={0.5} /></mesh>
+      <Sign at={[0, 0.68, 0]} title={`CHARGE ${i + 1}`} tone="#297359" width={0.95} />
+    </group>)}
     {(warehouse.blocked || []).map(([x, z]) => <BlockedAisle key={`${x}:${z}`} position={[x + 0.5, 0, z + 0.5]} cell={[x, z]} />)}
+    {placing && <BlockPlacement width={width} height={height} />}
   </group>
 }

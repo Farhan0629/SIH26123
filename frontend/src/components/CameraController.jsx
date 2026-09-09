@@ -17,6 +17,9 @@ export default function CameraController() {
   const revision = useStore((s) => s.cameraRevision)
   const reduced = useStore((s) => s.reducedMotion)
   const setMode = useStore((s) => s.setCameraMode)
+  // While barriers are being painted, a drag has to mean "paint", not "orbit".
+  // Zoom stays live so the floor can still be inspected mid-placement.
+  const placeMode = useStore((s) => s.placeMode)
   const position = useMemo(() => new Vector3(), [])
   const target = useMemo(() => new Vector3(), [])
   useEffect(() => { settled.current = false }, [mode, revision])
@@ -42,5 +45,5 @@ export default function CameraController() {
     controls.current.update()
     if (mode !== 'follow' && camera.position.distanceTo(position) < 0.015 && controls.current.target.distanceTo(target) < 0.015) settled.current = true
   })
-  return <OrbitControls ref={controls} makeDefault target={[10, 0.7, 10]} minDistance={2.5} maxDistance={52} maxPolarAngle={Math.PI / 2.03} enableDamping={!reduced} dampingFactor={0.12} onStart={() => setMode('orbit')} />
+  return <OrbitControls ref={controls} makeDefault target={[10, 0.7, 10]} minDistance={2.5} maxDistance={52} maxPolarAngle={Math.PI / 2.03} enableDamping={!reduced} dampingFactor={0.12} enableRotate={!placeMode} enablePan={!placeMode} onStart={() => setMode('orbit')} />
 }
