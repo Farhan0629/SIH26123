@@ -51,6 +51,10 @@ class Warehouse:
         self.charging_stations = []
         self._extract_special_cells()
         self.blocked_cells = set()
+        # Physical floor occupancy, written by robots as they move. This stands
+        # in for onboard proximity sensing: a robot can see a body in the next
+        # cell even when its radio is down, exactly like a real LiDAR bumper.
+        self.robot_occupancy: dict[int, tuple[int, int]] = {}
 
     def _build_grid(self) -> list[list[int]]:
         grid = []
@@ -89,6 +93,10 @@ class Warehouse:
 
     def unblock_aisle(self, x: int, y: int):
         self.blocked_cells.discard((x, y))
+
+    def set_occupancy(self, robot_id: int, cell: tuple[int, int]):
+        """Record where a robot physically is."""
+        self.robot_occupancy[robot_id] = cell
 
     def to_serializable(self) -> dict:
         return {

@@ -6,8 +6,14 @@ from config import (
     BATTERY_LOW_THRESHOLD,
     LOOKAHEAD_WINDOW,
     P2P_BROADCAST_INTERVAL,
+    SENSOR_RANGE,
+    robot_name,
 )
 from pathfinding import a_star
+
+# How many consecutive blocked ticks a unit tolerates before it stops waiting
+# and asks its onboard planner for a different route.
+REPLAN_AFTER_WAITS = 3
 
 class Robot:
     """
@@ -17,6 +23,7 @@ class Robot:
     
     def __init__(self, robot_id: int, start_pos: tuple[int, int], warehouse):
         self.id = robot_id
+        self.name = robot_name(robot_id)
         
         # Physical state
         self.x, self.y = start_pos
@@ -48,6 +55,9 @@ class Robot:
         
         # Environment reference
         self.warehouse = warehouse
+        # Publish our physical footprint so peers can sense us even if the
+        # radio link is down.
+        warehouse.set_occupancy(self.id, (self.x, self.y))
     
     def tick(self, current_tick: int, p2p_network, event_logger=None) -> str:
         """
@@ -83,7 +93,7 @@ class Robot:
             if event_logger:
                 event_logger.add_event(
                     "charging",
-                    f"AMR-{self.id} battery low ({self.battery:.0f}%) -> rerouting to inductive charging pad",
+                    f"{self.name} battery low ({self.battery:.0f}%) -> rerouting to inductive charging pad",
                     robot_id=self.id,
                     tick=current_tick
                 )
@@ -133,6 +143,7 @@ class Robot:
                 if intent and (intent[0] == (self.x, self.y) or (self.x, self.y) in intent[:3]):
                     neighbors = self.warehouse.get_neighbors(self.x, self.y)
                     occupied = set((p[0], p[1]) for p in self.known_peer_positions.values())
+                    occupied |= self._sensed_cells()
                     free = [n for n in neighbors if n not in occupied and n != (self.x, self.y)]
                     best_free = [n for n in free if n not in intent]
                     chosen = best_free[0] if best_free else (free[0] if free else None)
@@ -179,7 +190,7 @@ class Robot:
             if event_logger:
                 event_logger.add_event(
                     "reroute",
-                    f"AMR-{self.id} encountered blocked cell at {next_cell} -> rerouted via P2P A*",
+                    f"{self.name} encountered blocked cell at {next_cell} -> rerouted via onboard A*",
                     robot_id=self.id,
                     tick=tick
                 )
@@ -195,7 +206,7 @@ class Robot:
             self.is_yielding = True
             self.wait_ticks += 1
             self.consecutive_waits += 1
-            if self.consecutive_waits >= 3:
+            if self.consecutive_waits >= REPLAN_AFTER_WAITS:
                 self._replan_path(p2p_network, tick)
             return "waited"
         
@@ -220,7 +231,26 @@ class Robot:
         
         return "moved"
     
+    def _sensed_cells(self) -> set[tuple[int, int]]:
+        """Cells physically occupied by peers inside onboard sensor range.
+
+        This is deliberately independent of the P2P radio: a unit inside a
+        Wi-Fi dead zone still has eyes, so it can never drive into a body it
+        can see. Radio silence degrades coordination, not safety.
+        """
+        sensed = set()
+        for peer_id, cell in self.warehouse.robot_occupancy.items():
+            if peer_id == self.id:
+                continue
+            if abs(cell[0] - self.x) + abs(cell[1] - self.y) <= SENSOR_RANGE:
+                sensed.add(cell)
+        return sensed
+    
     def _would_collide(self, next_cell: tuple[int, int]) -> bool:
+        # Onboard proximity sensing first — always available.
+        if next_cell in self._sensed_cells():
+            return True
+        
         for peer_id, peer_info in self.known_peer_positions.items():
             px, py = peer_info[0], peer_info[1]
             
@@ -263,6 +293,7 @@ class Robot:
             self.heading = 270
         self.x, self.y = cell
         self.total_distance += 1
+        self.warehouse.set_occupancy(self.id, cell)
         
         if p2p_network:
             self._broadcast_position(p2p_network, tick)
@@ -330,7 +361,7 @@ class Robot:
             if event_logger:
                 event_logger.add_event(
                     "reroute",
-                    f"AMR-{self.id} detected blocked aisle at {blocked_cell} -> dynamically recalculated A* route",
+                    f"{self.name} heard a blocked-aisle alert at {blocked_cell} -> recalculated A* route",
                     robot_id=self.id,
                     tick=tick,
                 )
@@ -389,6 +420,7 @@ class Robot:
         status_str = "yielding" if getattr(self, "is_yielding", False) else self.status
         return {
             "id": self.id,
+            "name": self.name,
             "x": self.x,
             "y": self.y,
             "prev_x": self.prev_x,

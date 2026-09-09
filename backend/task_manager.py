@@ -1,5 +1,7 @@
 import random
 
+from config import robot_name
+
 class Task:
     """A pickup-and-deliver task."""
     _counter = 0
@@ -14,7 +16,7 @@ class Task:
 
 class TaskManager:
     """
-    Decentralized task allocation using simplified CBBA.
+    Decentralized task allocation using a simplified bid auction.
     """
     
     def __init__(self, warehouse):
@@ -26,26 +28,33 @@ class TaskManager:
         self.completed_tasks: list[Task] = []
         self.all_tasks: list[Task] = []
     
-    def generate_manifest(self) -> list[Task]:
+    def generate_manifest(self, pairing: list[int] | None = None) -> list[Task]:
         """Stage exactly one package per loading table.
 
-        Loading table N is paired with the delivery table at the opposite end of
-        the floor (reversed order), so every route crosses the warehouse and the
-        fleet meets in the aisles instead of running parallel lanes.
+        By default loading table N is paired with the delivery table at the
+        opposite end of the floor (reversed order), so every route crosses the
+        warehouse and the fleet meets in the aisles instead of running parallel
+        lanes.
 
-        This is the demonstration manifest: nothing is created mid-episode, so
-        every package on screen starts visibly on a table.
+        `pairing` optionally supplies delivery-table indices (a permutation) so
+        the headless benchmark can vary the manifest between episodes while
+        keeping the same rule: six packages, staged once, before the clock
+        starts. Nothing is ever created mid-episode.
         """
         pickups = list(self.warehouse.pickup_points)
-        dropoffs = list(reversed(self.warehouse.dropoff_points))
-        for pickup, dropoff in zip(pickups, dropoffs):
+        dropoffs = list(self.warehouse.dropoff_points)
+        if pairing is None:
+            targets = list(reversed(dropoffs))
+        else:
+            targets = [dropoffs[index] for index in pairing]
+        for pickup, dropoff in zip(pickups, targets):
             task = Task(pickup=pickup, dropoff=dropoff)
             self.pending_tasks.append(task)
             self.all_tasks.append(task)
         return list(self.all_tasks)
     
     def generate_task(self) -> Task:
-        """Generate a random pickup-deliver task (headless benchmark only)."""
+        """Generate a single random pickup-deliver task (legacy helper)."""
         pickup = random.choice(self.warehouse.pickup_points)
         dropoff = random.choice(self.warehouse.dropoff_points)
         task = Task(pickup=pickup, dropoff=dropoff)
@@ -55,7 +64,7 @@ class TaskManager:
     
     def allocate_tasks(self, robots: list, p2p_network, event_logger=None, tick: int = 0) -> list[dict]:
         """
-        Run CBBA allocation for pending tasks.
+        Run bid allocation for pending tasks.
         Also synchronizes completed tasks from robot states.
         """
         # 1. Handle abandoned tasks (e.g. robot went to charge before pickup)
@@ -95,8 +104,10 @@ class TaskManager:
             self.pending_tasks.remove(task)
             self.active_tasks.append(task)
             
+            winner = None
             for robot in robots:
                 if robot.id == winner_id:
+                    winner = robot
                     robot.assign_task({
                         "id": task.id,
                         "pickup": task.pickup,
@@ -111,9 +122,10 @@ class TaskManager:
             })
             
             if event_logger:
+                winner_label = getattr(winner, "name", None) or robot_name(winner_id)
                 event_logger.add_event(
                     "auction",
-                    f"Box #{task.id} allocated to AMR-{winner_id} via decentralized CBBA auction",
+                    f"Package #{task.id} awarded to {winner_label} — highest bid in the fleet auction",
                     robot_id=winner_id,
                     tick=tick
                 )

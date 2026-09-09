@@ -88,6 +88,10 @@ class P2PNetwork:
         """Restore network connectivity."""
         self.is_partitioned[robot_id] = False
     
+    def partitioned_ids(self) -> list[int]:
+        """Robot ids currently inside a Wi-Fi dead zone."""
+        return sorted(rid for rid, offline in self.is_partitioned.items() if offline)
+    
     def clear_log(self):
         """Clear message log."""
         self.message_log.clear()

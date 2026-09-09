@@ -1,16 +1,40 @@
 def detect_collisions(robots: list) -> list[tuple[int, int]]:
     """
-    Check if any two robots occupy the same cell.
-    Returns list of colliding robot ID pairs.
-    This is the validation check (should always return empty list).
+    Validation check for physical conflicts between robots in a single tick.
+
+    Two distinct failures are counted:
+
+    1. Vertex conflict  - two robots occupying the same cell.
+    2. Swap conflict    - two robots exchanging cells in the same tick, i.e.
+                          driving straight through one another. A same-cell
+                          check alone will never see this, so it has to be
+                          tested against the previous positions.
+
+    Returns a list of colliding robot ID pairs (should always be empty).
     """
     positions = {}
     collisions = []
+
     for robot in robots:
         pos = (robot.x, robot.y)
         if pos in positions:
             collisions.append((positions[pos], robot.id))
         positions[pos] = robot.id
+
+    # Swap (edge) conflicts: A ends where B started and B ends where A started.
+    for i, first in enumerate(robots):
+        first_prev = (getattr(first, "prev_x", first.x), getattr(first, "prev_y", first.y))
+        first_now = (first.x, first.y)
+        if first_now == first_prev:
+            continue  # did not move, cannot have swapped
+        for second in robots[i + 1:]:
+            second_prev = (getattr(second, "prev_x", second.x), getattr(second, "prev_y", second.y))
+            second_now = (second.x, second.y)
+            if second_now == second_prev:
+                continue
+            if first_now == second_prev and second_now == first_prev:
+                collisions.append((first.id, second.id))
+
     return collisions
 
 def detect_deadlock(robots: list) -> list[list[int]]:
