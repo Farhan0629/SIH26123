@@ -58,12 +58,15 @@ export default function Robot({ robot, selected = false, onSelect }) {
   const sim = useStore((s) => s.sim)
   const connected = useStore((s) => s.connected)
   const routes = useStore((s) => s.showRoutes)
+  const network = useStore((s) => s.network)
   const color = ACCENTS[(robot.id - 1) % ACCENTS.length]
   const handling = robot.handling
   const hasPackage = Boolean(robot.has_cargo || handling)
   const taskId = handling?.task_id || robot.carrying_task_id || robot.task?.id
   const status = getRobotStatusMeta(robot)
   const paused = sim.paused || !connected
+  const name = robot.name || `UNIT ${String(robot.id).padStart(2, '0')}`
+  const offline = (network?.partitioned ?? []).includes(robot.id)
 
   useEffect(() => {
     queueMotion(motion.current, robot.x + 0.5, robot.y + 0.5, 0.1 / Math.max(0.1, sim.speed), reduced)
@@ -104,7 +107,7 @@ export default function Robot({ robot, selected = false, onSelect }) {
         <Shell at={[0, 0.86, 0]} size={[0.21, 0.10, 0.135]} color={JOINT} />
         <Shell at={[0, RIG.chest, 0]} size={[0.23, 0.25, 0.15]} />
         <Shell at={[0, 1.22, 0.125]} size={[0.165, 0.135, 0.05]} color={color} />
-        <mesh position={[0, 1.08, 0.15]}><boxGeometry args={[0.18, 0.035, 0.012]} /><meshBasicMaterial color={handling ? '#f2b544' : '#9ed8d3'} /></mesh>
+        <mesh position={[0, 1.08, 0.15]}><boxGeometry args={[0.18, 0.035, 0.012]} /><meshBasicMaterial color={offline ? '#e0546a' : handling ? '#f2b544' : '#9ed8d3'} /></mesh>
         <Shell at={[0, 1.18, -0.15]} size={[0.16, 0.18, 0.072]} color={JOINT} />
         <Joint at={[0, 1.43, 0]} radius={0.065} />
         <Shell at={[0, RIG.head, 0]} size={[0.165, 0.17, 0.145]} />
@@ -117,8 +120,8 @@ export default function Robot({ robot, selected = false, onSelect }) {
         {hasPackage && <group ref={cargo} position={transferPose(handling).position}><CargoBox taskId={taskId} scale={1} /></group>}
       </group>
       <Html position={[0, 1.93, 0]} center zIndexRange={[12, 0]} style={{ pointerEvents: 'none' }}>
-        <button onClick={() => onSelect?.(robot.id)} aria-label={`Inspect unit ${robot.id}`} style={{ pointerEvents: 'auto', whiteSpace: 'nowrap', minHeight: 44, padding: '6px 10px', fontSize: 14, borderRadius: 8, border: `2px solid ${color}`, background: selected ? color : '#fff', color: selected ? '#fff' : '#243141' }}>
-          UNIT {String(robot.id).padStart(2, '0')}{selected ? ` · ${handling ? transferPose(handling).label : status.label}` : ''}
+        <button onClick={() => onSelect?.(robot.id)} aria-label={`Inspect ${name}${offline ? ', radio offline' : ''}`} style={{ pointerEvents: 'auto', whiteSpace: 'nowrap', minHeight: 44, padding: '6px 10px', fontSize: 14, borderRadius: 8, border: `2px solid ${offline ? '#e0546a' : color}`, background: selected ? color : '#fff', color: selected ? '#fff' : '#243141' }}>
+          {name}{offline ? ' · no radio' : ''}{selected ? ` · ${handling ? transferPose(handling).label : status.label}` : ''}
         </button>
       </Html>
     </group>

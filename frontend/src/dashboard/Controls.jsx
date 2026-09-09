@@ -6,6 +6,9 @@ const BUTTON = 'min-h-11 rounded-md border px-3 text-sm font-medium transition'
 export default function Controls() {
   const connected = useStore((s) => s.connected)
   const sim = useStore((s) => s.sim)
+  const robots = useStore((s) => s.robots)
+  const network = useStore((s) => s.network)
+  const warehouse = useStore((s) => s.warehouse)
   const cameraMode = useStore((s) => s.cameraMode)
   const setCameraMode = useStore((s) => s.setCameraMode)
   const showRoutes = useStore((s) => s.showRoutes)
@@ -14,6 +17,9 @@ export default function Controls() {
   const setShowP2P = useStore((s) => s.setShowP2P)
   const shelfView = useStore((s) => s.shelfView)
   const setShelfView = useStore((s) => s.setShelfView)
+
+  const partitioned = network?.partitioned ?? []
+  const blockedCount = warehouse?.blocked?.length ?? 0
 
   const sendSafe = (action, params) => {
     if (!connected) return
@@ -57,6 +63,53 @@ export default function Controls() {
               {speed}x
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="space-y-1 rounded-md border border-amber-200 bg-amber-50/60 p-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Disruption drills</p>
+        <p className="text-[11px] leading-snug text-slate-600">
+          Block an aisle to force live re-routing, or drop a unit&apos;s radio to prove the fleet keeps
+          coordinating without a central server.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            disabled={!connected}
+            onClick={() => sendSafe('block_aisle')}
+            className={`${BUTTON} border-amber-400 bg-white text-amber-800 disabled:cursor-not-allowed disabled:opacity-50`}
+          >
+            Block an aisle
+          </button>
+          <button
+            type="button"
+            disabled={!connected || blockedCount === 0}
+            onClick={() => sendSafe('clear_blocks')}
+            className={`${BUTTON} border-slate-300 bg-slate-50 text-slate-800 disabled:cursor-not-allowed disabled:opacity-50`}
+          >
+            Clear blockages{blockedCount ? ` (${blockedCount})` : ''}
+          </button>
+        </div>
+        <p className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700">Wi-Fi dead zone</p>
+        <div className="grid grid-cols-3 gap-2">
+          {robots.map((robot) => {
+            const offline = partitioned.includes(robot.id)
+            const label = robot.name || `UNIT ${String(robot.id).padStart(2, '0')}`
+            return (
+              <button
+                key={robot.id}
+                type="button"
+                disabled={!connected}
+                aria-pressed={offline}
+                onClick={() => sendSafe('toggle_partition', { robot_id: robot.id })}
+                className={`${BUTTON} truncate px-2 ${offline ? 'border-rose-500 bg-rose-600 text-white' : 'border-slate-300 bg-slate-50 text-slate-800'} disabled:cursor-not-allowed disabled:opacity-50`}
+                title={offline ? `${label} radio offline - tap to reconnect` : `Cut ${label}'s radio link`}
+              >
+                {offline ? `${label} ✕` : label}
+              </button>
+            )
+          })}
+          {!robots.length && <p className="col-span-3 text-[11px] text-slate-500">Waiting for fleet state.</p>}
         </div>
       </div>
 

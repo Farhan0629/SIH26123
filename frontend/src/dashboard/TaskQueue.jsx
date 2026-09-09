@@ -14,9 +14,14 @@ function TaskRow({ task, state }) {
 
 export default function TaskQueue() {
   const tasks = useStore((s) => s.tasks)
+  const robots = useStore((s) => s.robots)
 
   const active = tasks.active || []
   const pending = tasks.pending || []
+  const assigneeLabel = (id) => {
+    const owner = robots.find((robot) => robot.id === id)
+    return owner?.name || `R${id}`
+  }
 
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -31,7 +36,7 @@ export default function TaskQueue() {
       </div>
 
       <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
-        {active.map((task) => <TaskRow key={`active-${task.id}`} task={task} state={`R${task.assigned_to}`} />)}
+        {active.map((task) => <TaskRow key={`active-${task.id}`} task={task} state={assigneeLabel(task.assigned_to)} />)}
         {pending.map((task) => <TaskRow key={`pending-${task.id}`} task={task} state="pending" />)}
         {!active.length && !pending.length && <p className="py-4 text-center text-xs text-slate-500">No queued tasks.</p>}
       </div>

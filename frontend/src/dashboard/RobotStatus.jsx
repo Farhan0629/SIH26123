@@ -7,16 +7,19 @@ export default function RobotStatus({ robot }) {
   const selectedRobotId = useStore((s) => s.selectedRobotId)
   const selectRobot = useStore((s) => s.selectRobot)
   const setFollowRobot = useStore((s) => s.setFollowRobot)
+  const network = useStore((s) => s.network)
 
   const selected = selectedRobotId === robot.id
   const accent = ACCENTS[(robot.id - 1) % ACCENTS.length]
   const status = getRobotStatusMeta(robot)
   const destination = getRobotNextDestination(robot)
+  const label = robot.name || `UNIT-${String(robot.id).padStart(2, '0')}`
+  const offline = (network?.partitioned ?? []).includes(robot.id)
 
   return (
     <article
       className={`rounded-lg border bg-white p-3 shadow-sm transition ${selected ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'}`}
-      aria-label={`Robot ${robot.id}`}
+      aria-label={`Robot ${label}`}
     >
       <div className="flex items-start justify-between gap-2">
         <button
@@ -24,7 +27,14 @@ export default function RobotStatus({ robot }) {
           onClick={() => selectRobot(robot.id)}
           className="min-h-11 min-w-11 text-left"
         >
-          <p className="text-sm font-semibold" style={{ color: accent }}>UNIT-{String(robot.id).padStart(2, '0')}</p>
+          <p className="flex items-center gap-2 text-sm font-semibold" style={{ color: accent }}>
+            {label}
+            {offline && (
+              <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700">
+                Radio offline
+              </span>
+            )}
+          </p>
           <p className="text-xs text-slate-500">{status.label}</p>
         </button>
         <button

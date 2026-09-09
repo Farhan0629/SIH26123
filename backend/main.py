@@ -4,13 +4,23 @@ headless benchmark continues to import the original robot.Robot directly.
 The demonstration floor uses a fixed manifest: six packages start staged on the
 west loading tables and six delivery tables on the east start empty. No package
 is created mid-episode, so nothing appears out of nowhere on screen.
+
+Two disruption drills are exposed over the socket so a judge can trigger the
+hard requirements live:
+  * block_aisle      - drops an obstacle in front of a moving unit; the fleet
+                       gossips the hazard over the mesh and each unit replans
+                       on its own onboard A*.
+  * toggle_partition - simulates a Wi-Fi dead zone. The unit stops receiving
+                       and sending mesh traffic and must keep itself safe on
+                       onboard sensing alone, which is what "no central server"
+                       actually has to survive.
 """
 import asyncio
 import json
 import math
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from config import NUM_ROBOTS, TICK_INTERVAL, MAX_TICKS, DEFAULT_ROBOT_STARTS
+from config import NUM_ROBOTS, TICK_INTERVAL, MAX_TICKS, DEFAULT_ROBOT_STARTS, FACILITY_BEACON_ID
 from warehouse import Warehouse
 from presentation_robot import PresentationRobot as Robot
 from p2p import P2PNetwork
@@ -37,8 +47,46 @@ connected_clients = []
 baseline_running = False
 
 
+def find_robot(robot_id):
+    for robot in robots:
+        if robot.id == robot_id:
+            return robot
+    raise ValueError(f"No unit with id {robot_id}")
+
+
+def pick_choke_cell():
+    """Choose an aisle cell that actually disrupts someone.
+
+    Preference order: a cell further along a moving unit's own planned route
+    (skipping its next step so the block never lands under its feet), then any
+    free cell in the central aisles. Returns None if the floor is wide open.
+    """
+    occupied = {(robot.x, robot.y) for robot in robots}
+
+    def usable(x, y):
+        return (
+            0 <= x < warehouse.width
+            and 0 <= y < warehouse.height
+            and warehouse.grid[y][x] == 0
+            and (x, y) not in occupied
+            and (x, y) not in warehouse.blocked_cells
+        )
+
+    for robot in robots:
+        for cell in (robot.planned_path or [])[2:]:
+            x, y = cell[0], cell[1]
+            if usable(x, y):
+                return x, y
+
+    for x in range(8, 12):
+        for y in range(1, warehouse.height - 1):
+            if usable(x, y):
+                return x, y
+    return None
+
+
 def build_state_message(tick):
-    return {"type": "state_update", "tick": tick, "robots": [r.to_dict() for r in robots], "warehouse": warehouse.to_serializable(), "tasks": task_manager.to_dict(), "metrics": metrics.to_dict(), "p2p_messages": p2p_network.get_recent_messages(20), "events": event_logger.get_recent_events(30), "sim": {"running": sim_state["running"], "paused": sim_state["paused"], "speed": sim_state["speed"]}}
+    return {"type": "state_update", "tick": tick, "robots": [r.to_dict() for r in robots], "warehouse": warehouse.to_serializable(), "tasks": task_manager.to_dict(), "metrics": metrics.to_dict(), "p2p_messages": p2p_network.get_recent_messages(20), "events": event_logger.get_recent_events(30), "network": {"partitioned": p2p_network.partitioned_ids()}, "sim": {"running": sim_state["running"], "paused": sim_state["paused"], "speed": sim_state["speed"]}}
 
 
 async def broadcast_state(state):
@@ -64,18 +112,18 @@ async def simulation_loop():
         for robot in robots:
             action = robot.tick(tick, p2p_network, event_logger)
             if action == "picked_up" and robot.current_task:
-                event_logger.add_event("pickup", f"UNIT-{robot.id} secured package #{robot.current_task['id']} from loading table ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
+                event_logger.add_event("pickup", f"{robot.name} secured package #{robot.current_task['id']} from loading table ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
             elif action == "delivered":
                 if robot.last_delivered_task_id:
                     task_manager.mark_completed(robot.last_delivered_task_id)
-                    event_logger.add_event("delivery", f"UNIT-{robot.id} placed package #{robot.last_delivered_task_id} on delivery table ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
+                    event_logger.add_event("delivery", f"{robot.name} placed package #{robot.last_delivered_task_id} on delivery table ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
                 metrics.record_task_completion(tick)
             elif action == "handling" and robot.handling and robot.handling["progress"] == 0:
-                event_logger.add_event("pickup" if robot.handling["kind"] == "pickup" else "delivery", f"UNIT-{robot.id} {'reaching for' if robot.handling['kind'] == 'pickup' else 'lowering'} package #{robot.handling['task_id']}", robot_id=robot.id, tick=tick)
+                event_logger.add_event("pickup" if robot.handling["kind"] == "pickup" else "delivery", f"{robot.name} {'reaching for' if robot.handling['kind'] == 'pickup' else 'lowering'} package #{robot.handling['task_id']}", robot_id=robot.id, tick=tick)
             elif action == "stepped_aside":
-                event_logger.add_event("yield", f"UNIT-{robot.id} stepped aside to clear a bottleneck", robot_id=robot.id, tick=tick)
+                event_logger.add_event("yield", f"{robot.name} stepped aside to clear a bottleneck", robot_id=robot.id, tick=tick)
             elif action == "waited" and robot.consecutive_waits == 1:
-                event_logger.add_event("yield", f"UNIT-{robot.id} yielding at ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
+                event_logger.add_event("yield", f"{robot.name} yielding at ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
         for _ in detect_collisions(robots):
             metrics.record_collision()
         deadlocks = detect_deadlock(robots)
@@ -147,11 +195,12 @@ async def websocket_endpoint(ws: WebSocket):
                         for i, robot in enumerate(robots):
                             robot.__init__(robot.id, ROBOT_STARTS[i % len(ROBOT_STARTS)], warehouse)
                             p2p_network.register_robot(robot.id)
+                            p2p_network.restore_robot(robot.id)
                         task_manager.__init__(warehouse)
                         staged = len(task_manager.generate_manifest())
                         metrics.__init__()
                         event_logger.clear()
-                        event_logger.add_event("system", f"{staged} packages staged on the loading tables. {NUM_ROBOTS} humanoid units will carry each one across to an empty delivery table.", tick=0)
+                        event_logger.add_event("system", f"{staged} packages staged on the loading tables. {', '.join(r.name for r in robots)} will carry each one across to an empty delivery table.", tick=0)
                         asyncio.create_task(simulation_loop())
                 elif action == "pause" and sim_state["running"]:
                     sim_state["paused"] = not sim_state["paused"]
@@ -164,17 +213,43 @@ async def websocket_endpoint(ws: WebSocket):
                     sim_state["speed"] = speed
                     await broadcast_state(build_state_message(sim_state["tick"]))
                 elif action in ("block_aisle", "unblock_aisle"):
-                    x, y = int(command["x"]), int(command["y"])
+                    # Coordinates stay supported for scripted demos, but the
+                    # dashboard button sends no coordinates at all: the server
+                    # then picks a cell on a unit's own route so the drill is
+                    # guaranteed to force a live reroute.
+                    if command.get("x") is None and action == "block_aisle":
+                        cell = pick_choke_cell()
+                        if cell is None:
+                            raise ValueError("No free aisle cell available to block")
+                        x, y = cell
+                    else:
+                        x, y = int(command["x"]), int(command["y"])
                     if not (0 <= x < warehouse.width and 0 <= y < warehouse.height):
                         raise ValueError("Cell outside warehouse")
                     if action == "block_aisle":
                         if warehouse.grid[y][x] != 0 or any((r.x, r.y) == (x, y) for r in robots):
                             raise ValueError("Block an empty, unoccupied aisle cell")
                         warehouse.block_aisle(x, y)
-                        p2p_network.broadcast(1, "blocked", {"x": x, "y": y, "tick": sim_state["tick"]})
+                        # Gossip the hazard from the facility beacon so every
+                        # unit hears it. Broadcasting as robot 1 skipped robot 1.
+                        p2p_network.broadcast(FACILITY_BEACON_ID, "blocked", {"x": x, "y": y, "tick": sim_state["tick"]})
                     else:
                         warehouse.unblock_aisle(x, y)
-                    event_logger.add_event("hazard", f"Aisle ({x},{y}) {'blocked' if action == 'block_aisle' else 'restored'}", tick=sim_state["tick"])
+                    event_logger.add_event("hazard", f"Aisle ({x},{y}) {'blocked - hazard gossiped over the mesh, units replanning' if action == 'block_aisle' else 'restored'}", tick=sim_state["tick"])
+                    await broadcast_state(build_state_message(sim_state["tick"]))
+                elif action == "clear_blocks":
+                    cleared = len(warehouse.blocked_cells)
+                    warehouse.blocked_cells.clear()
+                    event_logger.add_event("hazard", f"{cleared} blocked aisle cell(s) cleared" if cleared else "No blocked aisles to clear", tick=sim_state["tick"])
+                    await broadcast_state(build_state_message(sim_state["tick"]))
+                elif action == "toggle_partition":
+                    robot = find_robot(int(command["robot_id"]))
+                    if p2p_network.is_partitioned.get(robot.id, False):
+                        p2p_network.restore_robot(robot.id)
+                        event_logger.add_event("system", f"{robot.name} reconnected to the mesh", robot_id=robot.id, tick=sim_state["tick"])
+                    else:
+                        p2p_network.partition_robot(robot.id)
+                        event_logger.add_event("hazard", f"{robot.name} lost radio in a Wi-Fi dead zone - navigating on onboard sensors only", robot_id=robot.id, tick=sim_state["tick"])
                     await broadcast_state(build_state_message(sim_state["tick"]))
                 elif action == "run_baseline" and not baseline_running:
                     baseline_running = True
@@ -189,7 +264,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/")
 def root():
-    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.2-fixed-manifest"}
+    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.3-disruption-drills"}
 
 @app.get("/api/warehouse")
 def get_warehouse():

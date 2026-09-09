@@ -6,7 +6,7 @@ import TaskQueue from './TaskQueue'
 import EventLog from './EventLog'
 import { getMissionSummary, getRobotNextDestination } from '../utils/simulationState.js'
 
-function SelectedInspector({ robot }) {
+function SelectedInspector({ robot, offline }) {
   const destination = getRobotNextDestination(robot)
 
   return (
@@ -14,7 +14,10 @@ function SelectedInspector({ robot }) {
       <h2 className="text-sm font-semibold text-slate-900">Selected unit</h2>
       {robot ? (
         <>
-          <p className="text-sm font-semibold text-slate-900">UNIT-{String(robot.id).padStart(2, '0')}</p>
+          <p className="text-sm font-semibold text-slate-900">
+            {robot.name || `UNIT-${String(robot.id).padStart(2, '0')}`}
+            {offline && <span className="ml-2 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700">Radio offline</span>}
+          </p>
           <p className="text-xs text-slate-600">Status: {robot.status}</p>
           <p className="text-xs text-slate-600">
             Cargo: {robot.has_cargo ? `PKG-${String(robot.carrying_task_id || robot.task?.id || 0).padStart(3, '0')}` : 'None'}
@@ -34,10 +37,12 @@ export default function Dashboard() {
   const robots = useStore((s) => s.robots)
   const sim = useStore((s) => s.sim)
   const tasks = useStore((s) => s.tasks)
+  const network = useStore((s) => s.network)
   const selectedRobotId = useStore((s) => s.selectedRobotId)
 
   const selectedRobot = robots.find((robot) => robot.id === selectedRobotId)
   const mission = getMissionSummary(tasks)
+  const partitioned = network?.partitioned ?? []
 
   return (
     <div className="space-y-3 p-3 md:p-4">
@@ -60,7 +65,7 @@ export default function Dashboard() {
       </section>
 
       <Controls />
-      <SelectedInspector robot={selectedRobot} />
+      <SelectedInspector robot={selectedRobot} offline={selectedRobot ? partitioned.includes(selectedRobot.id) : false} />
       <MetricsPanel />
 
       <section className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
