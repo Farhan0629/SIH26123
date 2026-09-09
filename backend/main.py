@@ -1,13 +1,16 @@
 """FastAPI/WebSocket simulation server. Web demos include handling dwell;
 headless benchmark continues to import the original robot.Robot directly.
+
+The demonstration floor uses a fixed manifest: six packages start staged on the
+west loading tables and six delivery tables on the east start empty. No package
+is created mid-episode, so nothing appears out of nowhere on screen.
 """
 import asyncio
 import json
 import math
-import random
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from config import NUM_ROBOTS, TICK_INTERVAL, MAX_TICKS, TASKS_PER_EPISODE, TASK_SPAWN_INTERVAL, DEFAULT_ROBOT_STARTS
+from config import NUM_ROBOTS, TICK_INTERVAL, MAX_TICKS, DEFAULT_ROBOT_STARTS
 from warehouse import Warehouse
 from presentation_robot import PresentationRobot as Robot
 from p2p import P2PNetwork
@@ -22,6 +25,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 warehouse = Warehouse()
 p2p_network = P2PNetwork()
 task_manager = TaskManager(warehouse)
+task_manager.generate_manifest()
 metrics = MetricsTracker()
 event_logger = EventLogger()
 ROBOT_STARTS = DEFAULT_ROBOT_STARTS
@@ -48,8 +52,7 @@ async def broadcast_state(state):
 
 
 async def simulation_loop():
-    for _ in range(3):
-        task_manager.generate_task()
+    manifest_size = len(task_manager.all_tasks)
     while sim_state["running"]:
         if sim_state["paused"]:
             await asyncio.sleep(0.1)
@@ -61,11 +64,11 @@ async def simulation_loop():
         for robot in robots:
             action = robot.tick(tick, p2p_network, event_logger)
             if action == "picked_up" and robot.current_task:
-                event_logger.add_event("pickup", f"UNIT-{robot.id} secured package #{robot.current_task['id']} at receiving ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
+                event_logger.add_event("pickup", f"UNIT-{robot.id} secured package #{robot.current_task['id']} from loading table ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
             elif action == "delivered":
                 if robot.last_delivered_task_id:
                     task_manager.mark_completed(robot.last_delivered_task_id)
-                    event_logger.add_event("delivery", f"UNIT-{robot.id} placed package #{robot.last_delivered_task_id} at dispatch ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
+                    event_logger.add_event("delivery", f"UNIT-{robot.id} placed package #{robot.last_delivered_task_id} on delivery table ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
                 metrics.record_task_completion(tick)
             elif action == "handling" and robot.handling and robot.handling["progress"] == 0:
                 event_logger.add_event("pickup" if robot.handling["kind"] == "pickup" else "delivery", f"UNIT-{robot.id} {'reaching for' if robot.handling['kind'] == 'pickup' else 'lowering'} package #{robot.handling['task_id']}", robot_id=robot.id, tick=tick)
@@ -78,10 +81,10 @@ async def simulation_loop():
         deadlocks = detect_deadlock(robots)
         if deadlocks:
             resolve_deadlock(robots, deadlocks, warehouse, p2p_network, tick)
-        if tick % TASK_SPAWN_INTERVAL == 0 and len(task_manager.all_tasks) < TASKS_PER_EPISODE:
-            task_manager.generate_task()
-        if len(task_manager.completed_tasks) >= TASKS_PER_EPISODE or tick >= MAX_TICKS:
+        if (manifest_size and len(task_manager.completed_tasks) >= manifest_size) or tick >= MAX_TICKS:
             sim_state["running"] = False
+            if manifest_size and len(task_manager.completed_tasks) >= manifest_size:
+                event_logger.add_event("system", f"All {manifest_size} packages moved to the delivery tables in {tick} ticks", tick=tick)
         await broadcast_state(build_state_message(tick))
         if sim_state["running"]:
             await asyncio.sleep(TICK_INTERVAL / max(0.1, sim_state["speed"]))
@@ -92,11 +95,13 @@ async def run_baseline_comparison():
     try:
         baseline_warehouse = Warehouse()
         baseline_robots = [BaselineRobot(i + 1, ROBOT_STARTS[i % len(ROBOT_STARTS)], baseline_warehouse) for i in range(NUM_ROBOTS)]
-        rng = random.Random(42)
-        tasks = [{"id": i + 1, "pickup": rng.choice(baseline_warehouse.pickup_points), "dropoff": rng.choice(baseline_warehouse.dropoff_points)} for i in range(TASKS_PER_EPISODE)]
+        # Same fixed manifest as the live demo so both runs move identical packages.
+        pairs = zip(baseline_warehouse.pickup_points, reversed(baseline_warehouse.dropoff_points))
+        tasks = [{"id": i + 1, "pickup": pickup, "dropoff": dropoff} for i, (pickup, dropoff) in enumerate(pairs)]
+        total = len(tasks)
         task_idx = 0
         for robot in baseline_robots:
-            if task_idx < len(tasks):
+            if task_idx < total:
                 robot.assign_task(tasks[task_idx]); task_idx += 1
         completed, final_tick = 0, MAX_TICKS
         for tick in range(MAX_TICKS):
@@ -106,13 +111,13 @@ async def run_baseline_comparison():
                 if robot.tick(baseline_robots) == "delivered":
                     completed += 1
                     metrics.record_baseline_completion(tick)
-                    if task_idx < len(tasks):
+                    if task_idx < total:
                         robot.assign_task(tasks[task_idx]); task_idx += 1
-            if completed >= TASKS_PER_EPISODE:
+            if completed >= total:
                 final_tick = tick
                 break
         metrics.record_baseline_episode(final_tick)
-        event_logger.add_event("system", f"Baseline {'completed' if completed >= TASKS_PER_EPISODE else 'timed out'}: {completed}/{TASKS_PER_EPISODE} deliveries. Web demo includes handling dwell; not a like-for-like benchmark.", tick=sim_state["tick"])
+        event_logger.add_event("system", f"Baseline {'completed' if completed >= total else 'timed out'}: {completed}/{total} deliveries. Web demo includes handling dwell; not a like-for-like benchmark.", tick=sim_state["tick"])
         await broadcast_state(build_state_message(sim_state["tick"]))
     finally:
         baseline_running = False
@@ -143,9 +148,10 @@ async def websocket_endpoint(ws: WebSocket):
                             robot.__init__(robot.id, ROBOT_STARTS[i % len(ROBOT_STARTS)], warehouse)
                             p2p_network.register_robot(robot.id)
                         task_manager.__init__(warehouse)
+                        staged = len(task_manager.generate_manifest())
                         metrics.__init__()
                         event_logger.clear()
-                        event_logger.add_event("system", f"Demonstration started with {NUM_ROBOTS} humanoid units. Pickup and placement include simulated handling time.", tick=0)
+                        event_logger.add_event("system", f"{staged} packages staged on the loading tables. {NUM_ROBOTS} humanoid units will carry each one across to an empty delivery table.", tick=0)
                         asyncio.create_task(simulation_loop())
                 elif action == "pause" and sim_state["running"]:
                     sim_state["paused"] = not sim_state["paused"]
@@ -183,7 +189,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/")
 def root():
-    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.1-presentation"}
+    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.2-fixed-manifest"}
 
 @app.get("/api/warehouse")
 def get_warehouse():

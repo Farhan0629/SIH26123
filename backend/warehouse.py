@@ -2,27 +2,31 @@ from config import (
     GRID_WIDTH, GRID_HEIGHT, EMPTY, SHELF, WALL, PICKUP, DROPOFF, CHARGING
 )
 
+# Fixed demonstration floor.
+# Six loading tables sit on the WEST aisle (column 2) and six delivery tables
+# sit on the EAST aisle (column 16), so every package must cross the whole
+# warehouse. Rack islands are 2x2 blocks that force real aisle navigation.
 LAYOUT = [
-    "WWWWWWWWWWWWWWWWWWWW",  # Row 0
-    "W..................W",  # Row 1
-    "W.##.##.##.##.##...W",  # Row 2
-    "W.##.##.##.##.##...W",  # Row 3
-    "W..................W",  # Row 4
-    "W.##.##.##.##.##.P.W",  # Row 5  (P at 17,5)
-    "W.##.##.##.##.##...W",  # Row 6
-    "W..................W",  # Row 7
-    "W.##.##.##.##.##...W",  # Row 8
-    "W.##.##.##.##.##.P.W",  # Row 9  (P at 17,9)
-    "W..................W",  # Row 10
-    "W.##.##.##.##.##...W",  # Row 11
-    "W.##.##.##.##.##...W",  # Row 12
-    "W..................W",  # Row 13
-    "W.##.##.##.##.##.D.W",  # Row 14 (D at 17,14)
-    "W.##.##.##.##.##...W",  # Row 15
-    "W..................W",  # Row 16
-    "W................D.W",  # Row 17 (D at 17,17)
-    "WC.......C.........W",  # Row 18 (C at 1,18 and 9,18)
-    "WWWWWWWWWWWWWWWWWWWW",  # Row 19
+    "WWWWWWWWWWWWWWWWWWWW",  # 0
+    "WC................CW",  # 1  chargers at (1,1) and (18,1)
+    "W.P.............D..W",  # 2  load 1 / drop 1
+    "W....##..##..##....W",  # 3
+    "W....##..##..##....W",  # 4
+    "W.P.............D..W",  # 5  load 2 / drop 2
+    "W..................W",  # 6
+    "W..................W",  # 7
+    "W.P.............D..W",  # 8  load 3 / drop 3
+    "W....##..##..##....W",  # 9
+    "W....##..##..##....W",  # 10
+    "W.P.............D..W",  # 11 load 4 / drop 4
+    "W..................W",  # 12
+    "W..................W",  # 13
+    "W.P.............D..W",  # 14 load 5 / drop 5
+    "W....##..##..##....W",  # 15
+    "W....##..##..##....W",  # 16
+    "W.P.............D..W",  # 17 load 6 / drop 6
+    "WC................CW",  # 18 chargers at (1,18) and (18,18)
+    "WWWWWWWWWWWWWWWWWWWW",  # 19
 ]
 
 CHAR_TO_CELL = {
@@ -36,10 +40,7 @@ CHAR_TO_CELL = {
 
 
 class Warehouse:
-    """
-    Warehouse grid map.
-    Provides neighbor lookup, walkability checks, and distance calculations.
-    """
+    """Warehouse grid map: neighbor lookup, walkability, and special cells."""
 
     def __init__(self):
         self.width = GRID_WIDTH
@@ -53,14 +54,12 @@ class Warehouse:
 
     def _build_grid(self) -> list[list[int]]:
         grid = []
-        for y, row_str in enumerate(LAYOUT):
-            row = []
-            for x, ch in enumerate(row_str):
-                row.append(CHAR_TO_CELL.get(ch, EMPTY))
-            grid.append(row)
+        for row_str in LAYOUT:
+            grid.append([CHAR_TO_CELL.get(ch, EMPTY) for ch in row_str])
         return grid
 
     def _extract_special_cells(self):
+        # Sorted north-to-south so loading table N pairs with a delivery table.
         for y in range(self.height):
             for x in range(self.width):
                 val = self.grid[y][x]
@@ -72,7 +71,7 @@ class Warehouse:
                     self.charging_stations.append((x, y))
 
     def is_walkable(self, x: int, y: int) -> bool:
-        """Return True if cell (x,y) is within bounds, not SHELF/WALL, and not blocked."""
+        """Return True if cell (x,y) is in bounds, not SHELF/WALL, not blocked."""
         return (
             0 <= x < self.width
             and 0 <= y < self.height
@@ -81,20 +80,17 @@ class Warehouse:
         )
 
     def get_neighbors(self, x: int, y: int) -> list[tuple[int, int]]:
-        """Return walkable 4-connected neighbors: up, down, left, right."""
+        """Return walkable 4-connected neighbors."""
         candidates = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
         return [(nx, ny) for nx, ny in candidates if self.is_walkable(nx, ny)]
 
     def block_aisle(self, x: int, y: int):
-        """Add cell to blocked_cells set (for dynamic obstacle demo)."""
         self.blocked_cells.add((x, y))
 
     def unblock_aisle(self, x: int, y: int):
-        """Remove cell from blocked_cells set."""
         self.blocked_cells.discard((x, y))
 
     def to_serializable(self) -> dict:
-        """Return grid as JSON-serializable dict for frontend."""
         return {
             "width": self.width,
             "height": self.height,

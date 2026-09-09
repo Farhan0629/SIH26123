@@ -35,8 +35,11 @@ LOOKAHEAD_WINDOW = 5     # check next 5 steps for conflicts
 SAFETY_DISTANCE = 1      # minimum cells between robots
 
 # ─── Task Settings ───
-TASKS_PER_EPISODE = 10   # total tasks to complete
-TASK_SPAWN_INTERVAL = 10 # ticks between new task spawns
+# The demonstration floor is a fixed manifest: six staged packages on the west
+# loading tables, six empty delivery tables on the east. Nothing spawns
+# mid-episode, so every package on screen has a visible origin.
+TASKS_PER_EPISODE = 6
+TASK_SPAWN_INTERVAL = 10  # retained for the headless benchmark only
 
 # ─── P2P Communication ───
 P2P_BROADCAST_INTERVAL = 1  # ticks between position broadcasts (10Hz)

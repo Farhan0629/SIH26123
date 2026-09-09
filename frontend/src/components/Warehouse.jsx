@@ -20,18 +20,28 @@ function Batch({ items, color, opacity = 1 }) {
 function Label({ children, at, tone = '#254f82' }) {
   return <Html position={at} center zIndexRange={[8, 0]} style={{ pointerEvents: 'none' }}><div style={{ background: '#fffffff0', borderLeft: `4px solid ${tone}`, borderRadius: 6, padding: '6px 10px', fontSize: 14, color: '#243141', whiteSpace: 'nowrap', boxShadow: '0 2px 8px #15243812' }}>{children}</div></Html>
 }
+// Twelve fixed tables: six LOADING tables start with one package each, six
+// DELIVERY tables start empty. Packages are never created mid-episode, so an
+// empty slot outline shows exactly where a package is still expected.
 function Station({ cell, index, kind, items, handling }) {
   const [x, z] = cell
-  const tone = kind === 'pickup' ? '#a56b1e' : '#297359'
+  const pickup = kind === 'pickup'
+  const tone = pickup ? '#a56b1e' : '#297359'
   const busy = handling.some((h) => h.kind === kind && h.station[0] === x && h.station[1] === z)
-  const item = kind === 'pickup' ? items[0] : items[items.length - 1]
+  const item = pickup ? items[0] : items[items.length - 1]
+  const state = busy
+    ? (pickup ? 'Robot lifting package' : 'Robot placing package')
+    : item
+      ? (pickup ? `Package #${item.taskId} ready` : `Package #${item.taskId} delivered`)
+      : (pickup ? 'Collected · table clear' : 'Empty · awaiting package')
   return <group position={[x + 0.5, 0, z + 0.5]}>
     <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[0.96, 0.96]} /><meshBasicMaterial color={tone} transparent opacity={0.16} depthWrite={false} /></mesh>
     <mesh position={[0.40, 0.745, 0]} receiveShadow><boxGeometry args={[0.32, 0.05, 0.7]} /><meshStandardMaterial color="#61758a" metalness={0.5} roughness={0.4} /></mesh>
     {[-0.27, 0.27].map((s) => <mesh key={s} position={[0.47, 0.36, s]}><boxGeometry args={[0.035, 0.72, 0.035]} /><meshStandardMaterial color="#8d9da9" /></mesh>)}
     <mesh position={[0.4, 0.78, -0.34]}><boxGeometry args={[0.32, 0.025, 0.025]} /><meshBasicMaterial color={tone} /></mesh>
+    {!busy && !item && <mesh position={[0.40, 0.776, 0]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[0.26, 0.4]} /><meshBasicMaterial color={tone} transparent opacity={0.34} depthWrite={false} /></mesh>}
     {!busy && item && <CargoBox taskId={item.taskId} position={[0.40, 0.91, 0]} rotation={[0, Math.PI / 2, 0]} />}
-    <Label at={[0.2, 2.12, 0]} tone={tone}><strong>{kind === 'pickup' ? 'RECEIVING' : 'DISPATCH'} {index + 1}</strong><br />{busy ? 'Transfer in progress' : `${items.length} ${kind === 'pickup' ? 'waiting' : 'delivered'}`} · ({x},{z})</Label>
+    <Label at={[0.2, 2.12 + (index % 2) * 0.62, 0]} tone={tone}><strong>{pickup ? 'LOADING' : 'DELIVERY'} {index + 1}</strong><br />{state} · ({x},{z})</Label>
   </group>
 }
 export default function Warehouse() {

@@ -19,13 +19,33 @@ class TaskManager:
     
     def __init__(self, warehouse):
         self.warehouse = warehouse
+        # Package labels restart at #1 for every demonstration run.
+        Task._counter = 0
         self.pending_tasks: list[Task] = []
         self.active_tasks: list[Task] = []
         self.completed_tasks: list[Task] = []
         self.all_tasks: list[Task] = []
     
+    def generate_manifest(self) -> list[Task]:
+        """Stage exactly one package per loading table.
+
+        Loading table N is paired with the delivery table at the opposite end of
+        the floor (reversed order), so every route crosses the warehouse and the
+        fleet meets in the aisles instead of running parallel lanes.
+
+        This is the demonstration manifest: nothing is created mid-episode, so
+        every package on screen starts visibly on a table.
+        """
+        pickups = list(self.warehouse.pickup_points)
+        dropoffs = list(reversed(self.warehouse.dropoff_points))
+        for pickup, dropoff in zip(pickups, dropoffs):
+            task = Task(pickup=pickup, dropoff=dropoff)
+            self.pending_tasks.append(task)
+            self.all_tasks.append(task)
+        return list(self.all_tasks)
+    
     def generate_task(self) -> Task:
-        """Generate a random pickup-deliver task."""
+        """Generate a random pickup-deliver task (headless benchmark only)."""
         pickup = random.choice(self.warehouse.pickup_points)
         dropoff = random.choice(self.warehouse.dropoff_points)
         task = Task(pickup=pickup, dropoff=dropoff)
