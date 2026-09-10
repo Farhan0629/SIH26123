@@ -77,15 +77,26 @@ class HandlingContract(unittest.TestCase):
         r = self.robot; r._handle_arrival(10, self.net)
         r.__init__(1, (1, 1), None)
         self.assertIsNone(r.handling)
-    def test_rack_transfer_exposes_slot_and_facing(self):
+    def test_rack_putaway_exposes_slot_and_facing(self):
+        """The putaway leg animates against the slot, not the aisle cell."""
         r = self.robot
-        r.current_task = {"id": 9, "pickup": (17, 5), "dropoff": (17, 5),
-                          "pickup_kind": "rack", "slot_cell": (18, 5),
-                          "slot_code": "C3-02", "stage": "retrieval"}
+        r.carrying = True
+        r.current_task = {"id": 9, "pickup": (2, 5), "dropoff": (17, 5),
+                          "dropoff_kind": "rack", "slot_cell": (18, 5),
+                          "slot_code": "C3-02", "stage": "putaway"}
         r._handle_arrival(10, self.net)
         handling = r.to_dict()['handling']
+        self.assertEqual(handling['kind'], 'dropoff')
         self.assertEqual(handling['place'], 'rack')
+        self.assertEqual(handling['stage'], 'putaway')
         self.assertEqual(handling['slot_code'], 'C3-02')
         self.assertEqual(handling['target'], [18, 5])
         self.assertEqual(handling['face'], 0)
+
+    def test_end_of_round_dock_waits_for_the_transfer(self):
+        """The round finishing must not strand a carton in mid-air."""
+        r = self.robot
+        r._handle_arrival(10, self.net)
+        self.assertFalse(r.park_for_charging(self.net, 11))
+        self.assertEqual(r.current_task['id'], 7)
 if __name__ == '__main__': unittest.main()
