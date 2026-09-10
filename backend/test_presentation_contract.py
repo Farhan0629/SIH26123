@@ -77,4 +77,15 @@ class HandlingContract(unittest.TestCase):
         r = self.robot; r._handle_arrival(10, self.net)
         r.__init__(1, (1, 1), None)
         self.assertIsNone(r.handling)
+    def test_rack_transfer_exposes_slot_and_facing(self):
+        r = self.robot
+        r.current_task = {"id": 9, "pickup": (17, 5), "dropoff": (17, 5),
+                          "pickup_kind": "rack", "slot_cell": (18, 5),
+                          "slot_code": "C3-02", "stage": "retrieval"}
+        r._handle_arrival(10, self.net)
+        handling = r.to_dict()['handling']
+        self.assertEqual(handling['place'], 'rack')
+        self.assertEqual(handling['slot_code'], 'C3-02')
+        self.assertEqual(handling['target'], [18, 5])
+        self.assertEqual(handling['face'], 0)
 if __name__ == '__main__': unittest.main()

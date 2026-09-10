@@ -11,6 +11,10 @@ How this benchmark is kept honest
                       The decentralized fleet and the stop-and-wait baseline
                       get the identical manifest and identical start cells, so
                       the only variable is the coordination algorithm.
+                      The benchmark runs single-leg deliveries (no putaway) so
+                      the fleet and the baseline move identical cargo; the
+                      two-leg storage cycle is a demonstration mode, not a way
+                      to inflate this number.
 2. SWAP DETECTION     Collision auditing counts same-cell conflicts AND swap
                       (edge) conflicts - two robots trading cells in one tick,
                       i.e. driving through each other. A same-cell check alone
@@ -31,6 +35,10 @@ How this benchmark is kept honest
                       headline number, so the full sensitivity curve is printed
                       instead of a single flattering value. The headline uses
                       N = 10 ticks = 1.0 s of physical stall at 10 Hz.
+6. SAME ENERGY RULES  Both fleets start every unit at BATTERY_MAX. Autonomous
+                      charging stays enabled for the decentralized fleet, so if
+                      an episode does run a unit down below the threshold the
+                      detour is paid for inside the measured time.
 
 Run:  python test_simulation.py
 """
@@ -91,6 +99,20 @@ def count_swaps(robots) -> int:
     return swaps
 
 
+def count_charger_conflicts(robots) -> int:
+    """Two units must never hold the same charging pad at the same time."""
+    claims = {}
+    conflicts = 0
+    for robot in robots:
+        pad = getattr(robot, "target_charger", None)
+        if pad is None:
+            continue
+        if pad in claims:
+            conflicts += 1
+        claims[pad] = robot.id
+    return conflicts
+
+
 async def run_smart_episode(seed: int) -> dict:
     """Decentralized P2P fleet on the fixed manifest."""
     warehouse = Warehouse()
@@ -104,7 +126,7 @@ async def run_smart_episode(seed: int) -> dict:
     for robot in robots:
         p2p.register_robot(robot.id)
 
-    same_cell = swaps = completed = 0
+    same_cell = swaps = completed = pad_conflicts = 0
     final_tick = None
 
     for tick in range(1, MAX_TICKS + 1):
@@ -117,6 +139,7 @@ async def run_smart_episode(seed: int) -> dict:
 
         same_cell += count_same_cell(robots)
         swaps += count_swaps(robots)
+        pad_conflicts += count_charger_conflicts(robots)
 
         deadlocks = detect_deadlock(robots)
         if deadlocks:
@@ -135,6 +158,7 @@ async def run_smart_episode(seed: int) -> dict:
         "total": total,
         "same_cell": same_cell,
         "swaps": swaps,
+        "pad_conflicts": pad_conflicts,
         "audit_pairs": len(detect_collisions(robots)),
     }
 
@@ -201,7 +225,7 @@ async def main() -> int:
     smart_by_seed = {}
     baseline_by_backoff = {backoff: {} for backoff in SENSITIVITY_BACKOFFS}
     naive_deadlocks = 0
-    smart_same_cell = smart_swaps = smart_timeouts = 0
+    smart_same_cell = smart_swaps = smart_timeouts = smart_pad_conflicts = 0
 
     for episode in range(NUM_EPISODES):
         seed = episode * 42 + 7
@@ -210,6 +234,7 @@ async def main() -> int:
         smart_by_seed[seed] = smart
         smart_same_cell += smart["same_cell"]
         smart_swaps += smart["swaps"]
+        smart_pad_conflicts += smart["pad_conflicts"]
         if smart["ticks"] is None:
             smart_timeouts += 1
 
@@ -243,6 +268,7 @@ async def main() -> int:
     print("SAFETY (decentralized fleet)")
     print(f"  same-cell collisions      : {smart_same_cell}")
     print(f"  swap  collisions          : {smart_swaps}")
+    print(f"  double-booked charge pads : {smart_pad_conflicts}")
     print(f"  episodes completed        : {NUM_EPISODES - smart_timeouts}/{NUM_EPISODES}")
     print("-" * 72)
     print("BASELINE BEHAVIOUR")
@@ -274,6 +300,8 @@ async def main() -> int:
         failures.append(f"{smart_same_cell} same-cell collisions")
     if smart_swaps:
         failures.append(f"{smart_swaps} swap collisions")
+    if smart_pad_conflicts:
+        failures.append(f"{smart_pad_conflicts} double-booked charging pads")
     if smart_timeouts:
         failures.append(f"{smart_timeouts} fleet timeouts")
     if improvement < REQUIRED_IMPROVEMENT_PCT:
@@ -288,11 +316,13 @@ async def main() -> int:
         return 1
 
     print("[PASS] zero collisions (same-cell and swap) across all episodes")
+    print("[PASS] no charging pad was ever claimed by two units at once")
     print(f"[PASS] {improvement:.1f}% faster than stop-and-wait (target {REQUIRED_IMPROVEMENT_PCT:.0f}%)")
 
     # Hard asserts, so an accidental edit to the reporting above still fails loudly.
     assert smart_same_cell == 0, "same-cell collisions detected"
     assert smart_swaps == 0, "swap collisions detected"
+    assert smart_pad_conflicts == 0, "two robots claimed the same charging pad"
     assert smart_timeouts == 0, "fleet episode timed out"
     assert improvement >= REQUIRED_IMPROVEMENT_PCT, "improvement below target"
     return 0
