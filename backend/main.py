@@ -1,17 +1,19 @@
 """FastAPI/WebSocket simulation server. Web demos include handling dwell;
 headless benchmark continues to import the original robot.Robot directly.
 
-The demonstration floor uses a fixed manifest: six packages start staged on the
-west loading tables and six delivery tables on the east start empty. No package
-is created mid-episode, so nothing appears out of nowhere on screen.
+The demonstration floor is a receiving round with a fully staged manifest:
+all twelve staging tables (six west, six east) start with exactly one carton on
+them and the rack islands start empty. A unit drives to a table, lifts THAT
+carton, carries it and slides it into its reserved slot:
+    RECEIVE -> PUTAWAY -> STORE      staging table -> reserved rack slot
+The carton then stays on the shelf. Nothing is created, duplicated or pulled
+back out of a rack mid-episode, so every carton on screen can be traced to the
+table it came from - a table is emptied the instant a unit starts lifting and
+is never refilled during the round.
 
-With STORAGE_FLOW_ENABLED each package runs the full warehouse cycle instead of
-a single hop:
-    RECEIVE -> PUTAWAY -> STORE      loading table -> reserved rack slot
-    PICK    -> PACK    -> DISPATCH   rack slot     -> delivery table
-The second leg goes back into the fleet auction, so the unit that stores a
-carton is usually not the unit that ships it, and "packages delivered" still
-counts each package exactly once.
+When the last carton is stored the round is over and END_OF_ROUND_CHARGE sends
+the whole fleet home: each unit books a pad over the mesh (never the same pad
+twice), drives to it, plugs in, charges and parks for the shift.
 
 Three disruption drills are exposed over the socket so a judge can trigger the
 hard requirements live:
@@ -22,7 +24,7 @@ hard requirements live:
                        unit replans on its own onboard A* once the floor runs.
   * toggle_partition - simulates a Wi-Fi dead zone. The unit stops receiving
                        and sending mesh traffic and must keep itself safe on
-                       onboard sensing alone, which is what "no central server"
+                       onboard sensing alone, which is what \"no central server\"
                        actually has to survive.
   * drain_battery    - pulls one unit's state of charge under the threshold so
                        the autonomous charge run (claim a pad over the mesh,
@@ -40,6 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import (
     NUM_ROBOTS, TICK_INTERVAL, MAX_TICKS, DEFAULT_ROBOT_STARTS, FACILITY_BEACON_ID,
     BATTERY_MAX, BATTERY_LOW_THRESHOLD, DEMO_BATTERY_LEVELS, STORAGE_FLOW_ENABLED,
+    END_OF_ROUND_CHARGE,
 )
 from warehouse import Warehouse
 from presentation_robot import PresentationRobot as Robot
@@ -138,6 +141,7 @@ async def broadcast_state(state):
 
 async def simulation_loop():
     manifest_size = len(task_manager.all_tasks)
+    round_reported = {"stored": False}
     while sim_state["running"]:
         if sim_state["paused"]:
             await asyncio.sleep(0.1)
@@ -150,11 +154,12 @@ async def simulation_loop():
             action = robot.tick(tick, p2p_network, event_logger)
             if action == "picked_up" and robot.current_task:
                 leg = robot.current_task
-                # A carton leaving a rack frees its slot immediately.
+                # Belt and braces: the source was already emptied when the lift
+                # started, and this call is a no-op if so.
                 task_manager.note_pickup(leg["id"])
                 source = (
                     f"rack slot {leg.get('slot_code')}" if leg.get("pickup_kind") == "rack"
-                    else f"loading table ({robot.x},{robot.y})"
+                    else f"table {leg.get('table_code') or ''} ({robot.x},{robot.y})".replace("  ", " ")
                 )
                 event_logger.add_event("pickup", f"{robot.name} secured package #{leg['id']} from {source}", robot_id=robot.id, tick=tick)
             elif action == "delivered":
@@ -162,7 +167,8 @@ async def simulation_loop():
                     outcome, task = task_manager.complete_leg(robot.last_delivered_task_id)
                     if outcome == "stored":
                         metrics.record_storage()
-                        event_logger.add_event("storage", f"{robot.name} put package #{task.id} away in rack slot {task.slot_code} \u2014 PICK order re-auctioned for dispatch", robot_id=robot.id, tick=tick)
+                        metrics.record_task_completion(tick)
+                        event_logger.add_event("storage", f"{robot.name} put package #{task.id} away in rack slot {task.slot_code} \\u2014 the slot holds it from here", robot_id=robot.id, tick=tick)
                     elif outcome == "delivered":
                         metrics.record_task_completion(tick)
                         event_logger.add_event("delivery", f"{robot.name} placed package #{robot.last_delivered_task_id} on delivery table ({robot.x},{robot.y})", robot_id=robot.id, tick=tick)
@@ -171,8 +177,13 @@ async def simulation_loop():
             elif action == "handling" and robot.handling and robot.handling["progress"] == 0:
                 rack = robot.handling.get("place") == "rack"
                 picking = robot.handling["kind"] == "pickup"
-                verb = ("lifting out of" if picking else "sliding into") if rack else ("reaching for" if picking else "lowering")
-                where = f" {robot.handling.get('slot_code')}" if rack else ""
+                if picking:
+                    # The carton leaves its source the moment the lift starts,
+                    # so the table (or slot) it came from reads as empty for the
+                    # whole transfer instead of showing a duplicate carton.
+                    task_manager.note_pickup(robot.handling["task_id"])
+                verb = ("lifting out of" if picking else "sliding into") if rack else ("lifting off" if picking else "lowering onto")
+                where = f" {robot.handling.get('slot_code')}" if rack else " the table"
                 event_logger.add_event("storage" if rack else ("pickup" if picking else "delivery"), f"{robot.name} {verb} package #{robot.handling['task_id']}{where}", robot_id=robot.id, tick=tick)
             elif action == "stepped_aside":
                 event_logger.add_event("yield", f"{robot.name} stepped aside to clear a bottleneck", robot_id=robot.id, tick=tick)
@@ -183,13 +194,24 @@ async def simulation_loop():
         deadlocks = detect_deadlock(robots)
         if deadlocks:
             resolve_deadlock(robots, deadlocks, warehouse, p2p_network, tick)
-        if (manifest_size and len(task_manager.completed_tasks) >= manifest_size) or tick >= MAX_TICKS:
+        # The round is finished when every staged carton is on a shelf. The
+        # fleet then takes itself home: book a pad, dock, charge, park.
+        round_done = bool(manifest_size) and len(task_manager.completed_tasks) >= manifest_size
+        if round_done and END_OF_ROUND_CHARGE:
+            if not round_reported["stored"]:
+                round_reported["stored"] = True
+                event_logger.add_event("system", f"All {manifest_size} packages are on the shelves after {tick} ticks \\u2014 fleet heading to the charging pads", tick=tick)
+            for robot in robots:
+                robot.park_for_charging(p2p_network, tick, event_logger)
+        fleet_parked = all(getattr(robot, "parked", False) for robot in robots) if END_OF_ROUND_CHARGE else True
+        if (round_done and fleet_parked) or tick >= MAX_TICKS:
             sim_state["running"] = False
-            if manifest_size and len(task_manager.completed_tasks) >= manifest_size:
+            if round_done:
                 stored = metrics.packages_stored
                 charges = metrics.charge_cycles
-                extra = f" ({stored} putaway legs, {charges} autonomous charge runs)" if (stored or charges) else ""
-                event_logger.add_event("system", f"All {manifest_size} packages moved to the delivery tables in {tick} ticks{extra}", tick=tick)
+                extra = f" ({charges} charge run(s) during the round)" if charges else ""
+                docked = ", ".join(f"{r.name} {r.battery:.0f}%" for r in robots)
+                event_logger.add_event("system", f"Round complete in {tick} ticks: {stored} packages put away, fleet parked on the pads{extra} \\u2014 {docked}", tick=tick)
         await broadcast_state(build_state_message(tick))
         if sim_state["running"]:
             await asyncio.sleep(TICK_INTERVAL / max(0.1, sim_state["speed"]))
@@ -260,10 +282,10 @@ async def websocket_endpoint(ws: WebSocket):
                         event_logger.clear()
                         if STORAGE_FLOW_ENABLED:
                             summary = (
-                                f"{staged} packages staged on the loading tables. "
-                                f"{', '.join(r.name for r in robots)} will put each one away into its reserved rack slot "
-                                "(RECEIVE \u2192 PUTAWAY \u2192 STORE), then re-auction the pick and ship it "
-                                "(PICK \u2192 PACK \u2192 DISPATCH)."
+                                f"{staged} packages staged \\u2014 one carton on every table, racks empty. "
+                                f"{', '.join(r.name for r in robots)} will move them one at a time into their reserved "
+                                "rack slots (RECEIVE \\u2192 PUTAWAY \\u2192 STORE), then dock on the charging pads "
+                                "once the last carton is on a shelf."
                             )
                         else:
                             summary = (
@@ -339,7 +361,7 @@ async def websocket_endpoint(ws: WebSocket):
                     if not math.isfinite(level) or not 1 <= level <= BATTERY_MAX:
                         raise ValueError(f"Battery level must be between 1 and {BATTERY_MAX}")
                     robot.battery = level
-                    event_logger.add_event("charging", f"Drill: {robot.name} state of charge pulled down to {robot.battery:.0f}% \u2014 it will book a pad over the mesh and detour to charge", robot_id=robot.id, tick=sim_state["tick"])
+                    event_logger.add_event("charging", f"Drill: {robot.name} state of charge pulled down to {robot.battery:.0f}% \\u2014 it will book a pad over the mesh and detour to charge", robot_id=robot.id, tick=sim_state["tick"])
                     await broadcast_state(build_state_message(sim_state["tick"]))
                 elif action == "run_baseline" and not baseline_running:
                     baseline_running = True
@@ -354,7 +376,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/")
 def root():
-    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.5-charging-and-storage"}
+    return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.6-putaway-round"}
 
 @app.get("/api/warehouse")
 def get_warehouse():

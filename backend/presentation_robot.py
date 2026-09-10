@@ -99,6 +99,13 @@ class PresentationRobot(Robot):
         if self.handling is None:
             super()._go_to_charging(p2p_network, tick)
 
+    def park_for_charging(self, p2p_network=None, tick=0, event_logger=None):
+        # Same rule for the end-of-round dock: a carton in mid-air is never
+        # left hanging because the round finished.
+        if self.handling is not None:
+            return False
+        return super().park_for_charging(p2p_network, tick, event_logger)
+
     def to_dict(self):
         result = super().to_dict()
         result["handling"] = dict(self.handling) if self.handling else None
