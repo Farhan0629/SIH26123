@@ -3,6 +3,7 @@ import useStore from '../store'
 const EVENT_LABELS = {
   pickup: 'Picked up',
   delivery: 'Delivered',
+  storage: 'Storage',
   yield: 'Yielded',
   reroute: 'Rerouted',
   hazard: 'Hazard',

@@ -21,6 +21,11 @@ function SelectedInspector({ robot, offline }) {
           <p className="text-xs text-slate-600">Status: {robot.status}</p>
           <p className="text-xs text-slate-600">
             Cargo: {robot.has_cargo ? `PKG-${String(robot.carrying_task_id || robot.task?.id || 0).padStart(3, '0')}` : 'None'}
+            {robot.task?.slot_code ? ` · rack slot ${robot.task.slot_code}` : ''}
+          </p>
+          <p className="text-xs text-slate-600">
+            Energy: {Math.round(robot.battery)}%{robot.battery_low ? ' · below threshold' : ''}
+            {robot.charger_label ? ` · booked ${robot.charger_label}` : ''}
           </p>
           <p className="text-xs text-slate-600">
             Next stop: {destination ? `${destination.type} (${destination.coordinate[0]},${destination.coordinate[1]})` : 'Awaiting task'}
@@ -57,10 +62,11 @@ export default function Dashboard() {
             <p className="text-xs text-slate-500">complete</p>
           </div>
         </div>
-        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+        <div className="mt-2 grid grid-cols-4 gap-2 text-xs">
           <div className="rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">Pending <span className="block text-sm font-semibold text-slate-900">{mission.pending}</span></div>
           <div className="rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">Active <span className="block text-sm font-semibold text-slate-900">{mission.active}</span></div>
-          <div className="rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">Delivered <span className="block text-sm font-semibold text-slate-900">{mission.completed}</span></div>
+          <div className="rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">In racks <span className="block text-sm font-semibold text-slate-900">{mission.inRacks}</span></div>
+          <div className="rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">Dispatched <span className="block text-sm font-semibold text-slate-900">{mission.completed}</span></div>
         </div>
       </section>
 
