@@ -21,7 +21,7 @@ class EventLogger:
             "id": self._counter,
             "tick": tick,
             "time": timestamp,
-            "type": event_type,  # 'pickup', 'delivery', 'yield', 'reroute', 'hazard', 'charge', 'auction', 'system'
+            "type": event_type,  # 'pickup', 'delivery', 'storage', 'yield', 'reroute', 'hazard', 'charging', 'auction', 'system'
             "robot_id": robot_id,
             "text": message,
         }

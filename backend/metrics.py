@@ -9,6 +9,9 @@ class MetricsTracker:
         self.episode_ticks = 0
         self.baseline_episode_ticks = 0
         self.robot_wait_ticks = {}
+        # Warehouse cycle counters
+        self.packages_stored = 0             # completed PUTAWAY legs
+        self.charge_cycles = 0               # completed autonomous charge runs
     
     def record_collision(self):
         self.total_collisions += 1
@@ -16,6 +19,12 @@ class MetricsTracker:
     def record_task_completion(self, ticks_taken: int):
         self.task_completion_ticks.append(ticks_taken)
         self.total_tasks_completed += 1
+    
+    def record_storage(self):
+        self.packages_stored += 1
+    
+    def record_charge_cycle(self):
+        self.charge_cycles += 1
     
     def record_baseline_completion(self, ticks_taken: int):
         self.baseline_completion_ticks.append(ticks_taken)
@@ -52,4 +61,6 @@ class MetricsTracker:
             "baseline_avg_ticks": baseline_val,
             "improvement_pct": round(self.get_improvement_pct(), 1),
             "episode_ticks": self.episode_ticks,
+            "packages_stored": self.packages_stored,
+            "charge_cycles": self.charge_cycles,
         }

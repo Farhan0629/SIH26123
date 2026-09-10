@@ -85,6 +85,22 @@ def detect_deadlock(robots: list) -> list[list[int]]:
     
     return cycles
 
+
+def _restored_status(robot) -> str:
+    """What a unit should go back to after being backed out of a deadlock.
+
+    A unit on an energy detour owns a charging pad, not a task, so restoring it
+    to "idle" would silently cancel the charge run it is halfway through.
+    """
+    if robot.status == "charging":
+        return "charging"
+    if getattr(robot, "target_charger", None) is not None and not robot.current_task:
+        return "moving_to_charge"
+    if robot.carrying:
+        return "moving_to_dropoff"
+    return "moving_to_pickup" if robot.current_task else "idle"
+
+
 def resolve_deadlock(robots: list, cycles: list[list[int]], warehouse, p2p_network=None, tick: int = 0):
     """
     Resolve deadlocks by making the highest-ID robot in each cycle back up and replan.
@@ -106,7 +122,7 @@ def resolve_deadlock(robots: list, cycles: list[list[int]], warehouse, p2p_netwo
                         robot.prev_x, robot.prev_y = robot.x, robot.y
                         robot._move_to(backup_cell, p2p_network, tick)
                         robot._replan_path(p2p_network, tick)
-                        robot.status = "moving_to_dropoff" if robot.carrying else ("moving_to_pickup" if robot.current_task else "idle")
+                        robot.status = _restored_status(robot)
                         resolved = True
                         break
             if resolved:
