@@ -50,16 +50,24 @@ test('follow respects current selection, and handles an empty fleet', () => {
 })
 test('safety and handling labels are not hidden by cargo', () => {
   assert.equal(getRobotStatusMeta({ has_cargo: true, status: 'yielding' }).label, 'Yielding')
-  assert.equal(getRobotStatusMeta({ has_cargo: true, handling: { kind: 'dropoff' } }).label, 'Placing package')
+  assert.equal(getRobotStatusMeta({ has_cargo: true, handling: { kind: 'dropoff' } }).label, 'Placing carton')
 })
-test('transfer package is represented once, and becomes delivered only from completed data', () => {
-  const task = { id: 7, pickup: [17, 5], dropoff: [17, 14], assigned_to: 1 }
-  const robot = { id: 1, task, has_cargo: true, handling: { kind: 'dropoff', task_id: 7 } }
-  const state = mapCargoLifecycle({ active: [task], pending: [], completed: [] }, [robot])
-  assert.equal(state.pickupCargo.length + state.carryingCargo.length + state.deliveredCargo.length, 0)
+test('a carton in transfer is represented exactly once, and only by the robot', () => {
+  const task = { id: 7, pickup: [2, 5], dropoff: [4, 3], table_code: 'T02', slot_code: 'A1-01' }
+  const floor = {
+    tables: [{ code: 'T02', cell: [2, 5], side: 'west', state: 'loaded', task_id: 7 }],
+    racks: [{ id: 0, code: 'A1-01', cell: [5, 3], access: [4, 3], state: 'reserved', task_id: 7 }],
+  }
+  const robot = { id: 1, task, has_cargo: true, handling: { kind: 'dropoff', task_id: 7, place: 'rack' } }
+  const state = mapCargoLifecycle({ active: [task] }, [robot], floor)
+  assert.equal(state.tableCargo.length + state.carryingCargo.length + state.storedCargo.length, 0)
   assert.equal(state.handlingCargo.length, 1)
-  const delivered = mapCargoLifecycle({ completed: [task] }, [{ id: 1, has_cargo: false }])
-  assert.equal(delivered.deliveredCargo.length, 1)
+  const stored = mapCargoLifecycle({}, [{ id: 1, has_cargo: false }], {
+    tables: [{ code: 'T02', cell: [2, 5], side: 'west', state: 'empty', task_id: null }],
+    racks: [{ id: 0, code: 'A1-01', cell: [5, 3], access: [4, 3], state: 'stored', task_id: 7 }],
+  })
+  assert.equal(stored.storedCargo.length, 1)
+  assert.equal(stored.tableCargo.length, 0)
 })
 test('charging destination is drawn from the actual route', () => {
   assert.deepEqual(getRobotNextDestination({ status: 'moving_to_charge', planned_path: [[3, 18], [1, 18]] }), { type: 'CHARGING', coordinate: [1, 18] })
