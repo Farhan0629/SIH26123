@@ -1,6 +1,8 @@
 import time
 from config import (
     BATTERY_MAX,
+    BATTERY_CHARGE_PER_TICK,
+    BATTERY_CHARGED_LEVEL,
     BATTERY_DRAIN_PER_MOVE,
     BATTERY_DRAIN_IDLE,
     BATTERY_LOW_THRESHOLD,
@@ -21,7 +23,7 @@ class Robot:
     Simulates edge computing — all decisions are local.
     """
     
-    def __init__(self, robot_id: int, start_pos: tuple[int, int], warehouse):
+    def __init__(self, robot_id: int, start_pos: tuple[int, int], warehouse, battery: float | None = None):
         self.id = robot_id
         self.name = robot_name(robot_id)
         
@@ -29,7 +31,7 @@ class Robot:
         self.x, self.y = start_pos
         self.prev_x, self.prev_y = start_pos  # for frontend interpolation
         self.heading = 0                      # 0=right, 90=down, 180=left, 270=up
-        self.battery = float(BATTERY_MAX)
+        self.battery = float(BATTERY_MAX if battery is None else battery)
         
         # Task state
         self.status = "idle"  # "idle" | "moving_to_pickup" | "moving_to_dropoff" | "waiting" | "charging" | "moving_to_charge"
@@ -39,6 +41,15 @@ class Robot:
         self.abandoned_task = None
         self.planned_path = []
         self.path_index = 0
+        
+        # Energy state. `target_charger` is the pad this unit has claimed over
+        # the mesh; it survives transient "waiting" states, so a unit that is
+        # briefly blocked on the way to a pad does not forget it was charging.
+        self.target_charger = None
+        self.known_charger_claims = {}   # {(x,y): (robot_id, cost)}
+        self.charge_cycles = 0
+        self.charge_started_tick = None
+        self._deferred_charge_logged = False
         
         # Decentralized knowledge (learned from P2P messages ONLY)
         self.known_peer_positions = {}  # {robot_id: (x, y, tick)}
@@ -87,16 +98,36 @@ class Robot:
         else:
             self.battery = max(0.0, self.battery - BATTERY_DRAIN_IDLE)
         
-        # 6. Low battery check
-        if self.battery <= BATTERY_LOW_THRESHOLD and self.status not in ("charging", "moving_to_charge"):
+        # 6. Low battery check: book a pad and detour, autonomously.
+        if (
+            self.battery <= BATTERY_LOW_THRESHOLD
+            and self.status != "charging"
+            and self.target_charger is None
+        ):
+            carried_id = self.current_task["id"] if (self.carrying and self.current_task) else None
+            abandoned_id = self.current_task["id"] if (self.current_task and not self.carrying) else None
             self._go_to_charging(p2p_network, current_tick)
             if event_logger:
-                event_logger.add_event(
-                    "charging",
-                    f"{self.name} battery low ({self.battery:.0f}%) -> rerouting to inductive charging pad",
-                    robot_id=self.id,
-                    tick=current_tick
-                )
+                if self.target_charger is not None:
+                    pad = self._charger_label(self.target_charger)
+                    detail = (
+                        f" \u2014 package #{abandoned_id} handed back to the auction"
+                        if abandoned_id else ""
+                    )
+                    event_logger.add_event(
+                        "charging",
+                        f"{self.name} at {self.battery:.0f}% claimed {pad} over the mesh and is detouring to charge{detail}",
+                        robot_id=self.id,
+                        tick=current_tick,
+                    )
+                elif carried_id and not self._deferred_charge_logged:
+                    self._deferred_charge_logged = True
+                    event_logger.add_event(
+                        "charging",
+                        f"{self.name} at {self.battery:.0f}% will finish delivering package #{carried_id} before charging",
+                        robot_id=self.id,
+                        tick=current_tick,
+                    )
         
         self.decision_time_ms = (time.perf_counter() - start_time) * 1000.0
         return action
@@ -115,6 +146,14 @@ class Robot:
             elif msg.msg_type == "blocked":
                 blocked_cell = (msg.payload["x"], msg.payload["y"])
                 self._handle_blocked_aisle(blocked_cell, event_logger, tick)
+            elif msg.msg_type == "charger_claim":
+                cell = tuple(msg.payload["cell"])
+                self.known_charger_claims[cell] = (msg.sender_id, msg.payload.get("cost", 0))
+            elif msg.msg_type == "charger_release":
+                cell = tuple(msg.payload["cell"])
+                holder = self.known_charger_claims.get(cell)
+                if holder and holder[0] == msg.sender_id:
+                    self.known_charger_claims.pop(cell, None)
     
     def _broadcast_position(self, p2p_network, tick: int):
         p2p_network.broadcast(
@@ -135,8 +174,114 @@ class Robot:
             },
         )
     
+    # ─── Charging pad negotiation ───────────────────────────────────────
+    
+    def _charge_cost(self, pad) -> int:
+        return abs(pad[0] - self.x) + abs(pad[1] - self.y)
+    
+    def _charger_label(self, pad) -> str:
+        try:
+            return f"CHARGE {self.warehouse.charging_stations.index(tuple(pad)) + 1}"
+        except (ValueError, AttributeError):
+            return "charging pad"
+    
+    def _select_charger(self, exclude=()):
+        """Nearest pad that nobody else has claimed or is standing on.
+        
+        Claims arrive over the mesh; occupancy also comes from onboard sensing,
+        so a radio-silent unit still refuses a pad it can see is taken.
+        """
+        pads = [pad for pad in self.warehouse.charging_stations if tuple(pad) not in exclude]
+        if not pads:
+            return None
+        sensed = self._sensed_cells()
+        free = []
+        for pad in pads:
+            claim = self.known_charger_claims.get(tuple(pad))
+            if claim and claim[0] != self.id:
+                continue
+            if tuple(pad) in sensed:
+                continue
+            free.append(pad)
+        pool = free or pads
+        return tuple(min(pool, key=lambda pad: (self._charge_cost(pad), pad[0], pad[1])))
+    
+    def _claim_charger(self, pad, p2p_network=None, tick: int = 0):
+        pad = tuple(pad)
+        cost = self._charge_cost(pad)
+        self.target_charger = pad
+        self.known_charger_claims[pad] = (self.id, cost)
+        if p2p_network:
+            p2p_network.broadcast(self.id, "charger_claim", {"cell": list(pad), "cost": cost, "tick": tick})
+    
+    def _release_charger(self, p2p_network=None, tick: int = 0):
+        pad = self.target_charger
+        self.target_charger = None
+        if pad is None:
+            return
+        holder = self.known_charger_claims.get(pad)
+        if holder and holder[0] == self.id:
+            self.known_charger_claims.pop(pad, None)
+        if p2p_network:
+            p2p_network.broadcast(self.id, "charger_release", {"cell": list(pad), "tick": tick})
+    
+    def _resolve_charger_conflict(self, p2p_network=None, tick: int = 0, event_logger=None):
+        """Two units must never book the same pad.
+        
+        Whoever is closer keeps it; ties break on the lower unit id, so both
+        sides of the conflict reach the same verdict from local state alone.
+        """
+        pad = self.target_charger
+        if pad is None:
+            return
+        claim = self.known_charger_claims.get(pad)
+        if not claim or claim[0] == self.id:
+            return
+        peer_id, peer_cost = claim
+        mine = (self._charge_cost(pad), self.id)
+        theirs = (peer_cost, peer_id)
+        if mine < theirs:
+            # We win: restate the claim so the peer hears it and backs off.
+            self._claim_charger(pad, p2p_network, tick)
+            return
+        alternative = self._select_charger(exclude=(pad,))
+        self.target_charger = None
+        if alternative is None:
+            self.status = "waiting"
+            return
+        self._claim_charger(alternative, p2p_network, tick)
+        self.status = "moving_to_charge"
+        self._replan_path(p2p_network, tick)
+        if event_logger:
+            event_logger.add_event(
+                "charging",
+                f"{self.name} yielded {self._charger_label(pad)} to {robot_name(peer_id)} "
+                f"and rebooked {self._charger_label(alternative)}",
+                robot_id=self.id,
+                tick=tick,
+            )
+    
+    def _begin_charging(self, tick: int, event_logger=None) -> str:
+        self.status = "charging"
+        self.planned_path = []
+        self.path_index = 0
+        self.charge_started_tick = tick
+        if event_logger:
+            event_logger.add_event(
+                "charging",
+                f"{self.name} docked at {self._charger_label(self.target_charger)} with {self.battery:.0f}% \u2014 cable connected",
+                robot_id=self.id,
+                tick=tick,
+            )
+        return "charging"
+    
     def _decide_and_act(self, tick: int, p2p_network, event_logger=None) -> str:
         self.is_yielding = False
+        
+        # Pad bookings are renegotiated before anything else moves.
+        if self.target_charger is not None and self.status != "charging":
+            self._resolve_charger_conflict(p2p_network, tick, event_logger)
+        
         if self.status == "idle":
             # If an active peer intends to enter our cell on its next step, politely yield/step aside
             for peer_id, intent in self.known_peer_intents.items():
@@ -154,25 +299,34 @@ class Robot:
             return "idle"
         
         if self.status == "charging":
-            self.battery = min(float(BATTERY_MAX), self.battery + 2.0)
-            if self.battery >= BATTERY_MAX:
+            self.battery = min(float(BATTERY_MAX), self.battery + BATTERY_CHARGE_PER_TICK)
+            if self.battery >= BATTERY_CHARGED_LEVEL:
+                self.charge_cycles += 1
+                pad_label = self._charger_label(self.target_charger)
+                self._release_charger(p2p_network, tick)
                 self.status = "idle"
+                self.charge_started_tick = None
+                self._deferred_charge_logged = False
+                if event_logger:
+                    event_logger.add_event(
+                        "charging",
+                        f"{self.name} charged to {self.battery:.0f}%, released {pad_label} over the mesh and rejoined the auction",
+                        robot_id=self.id,
+                        tick=tick,
+                    )
                 return "charged"
             return "charging"
         
         # Check if already at goal
         if not self.carrying and self.current_task:
-            if (self.x, self.y) == self.current_task["pickup"]:
+            if (self.x, self.y) == tuple(self.current_task["pickup"]):
                 return self._handle_arrival(tick, p2p_network)
         elif self.carrying and self.current_task:
-            if (self.x, self.y) == self.current_task["dropoff"]:
+            if (self.x, self.y) == tuple(self.current_task["dropoff"]):
                 return self._handle_arrival(tick, p2p_network)
-        elif self.status == "moving_to_charge":
-            if (self.x, self.y) in self.warehouse.charging_stations:
-                self.status = "charging"
-                self.planned_path = []
-                self.path_index = 0
-                return "charging"
+        elif self.target_charger is not None:
+            if (self.x, self.y) == self.target_charger:
+                return self._begin_charging(tick, event_logger)
         
         # Ensure we have a valid planned path
         if not self.planned_path or self.path_index >= len(self.planned_path):
@@ -214,20 +368,19 @@ class Robot:
         self.consecutive_waits = 0
         if self.current_task:
             self.status = "moving_to_dropoff" if self.carrying else "moving_to_pickup"
+        elif self.target_charger is not None:
+            self.status = "moving_to_charge"
         
         self._move_to(next_cell, p2p_network, tick)
         self.path_index += 1
         
         # Check if reached goal after moving
-        if not self.carrying and self.current_task and (self.x, self.y) == self.current_task["pickup"]:
+        if not self.carrying and self.current_task and (self.x, self.y) == tuple(self.current_task["pickup"]):
             return self._handle_arrival(tick, p2p_network)
-        elif self.carrying and self.current_task and (self.x, self.y) == self.current_task["dropoff"]:
+        elif self.carrying and self.current_task and (self.x, self.y) == tuple(self.current_task["dropoff"]):
             return self._handle_arrival(tick, p2p_network)
-        elif self.status == "moving_to_charge" and (self.x, self.y) in self.warehouse.charging_stations:
-            self.status = "charging"
-            self.planned_path = []
-            self.path_index = 0
-            return "charging"
+        elif self.target_charger is not None and not self.current_task and (self.x, self.y) == self.target_charger:
+            return self._begin_charging(tick, event_logger)
         
         return "moved"
     
@@ -302,7 +455,7 @@ class Robot:
         if not self.carrying and self.current_task:
             self.carrying = True
             self.status = "moving_to_dropoff"
-            goal = self.current_task["dropoff"]
+            goal = tuple(self.current_task["dropoff"])
             occupied = set((p[0], p[1]) for p in self.known_peer_positions.values())
             self.planned_path = a_star(self.warehouse, (self.x, self.y), goal, occupied)
             if self.planned_path is None:
@@ -326,24 +479,17 @@ class Robot:
         return "idle"
     
     def _replan_path(self, p2p_network=None, tick: int = 0):
-        if not self.current_task and self.status not in ("charging", "moving_to_charge"):
+        if not self.current_task and self.target_charger is None:
             self.planned_path = []
             self.path_index = 0
             return
         
-        if self.status in ("charging", "moving_to_charge"):
-            if not self.warehouse.charging_stations:
-                self.planned_path = []
-                self.path_index = 0
-                return
-            goal = min(
-                self.warehouse.charging_stations,
-                key=lambda c: abs(c[0] - self.x) + abs(c[1] - self.y),
-            )
+        if self.target_charger is not None and not self.current_task:
+            goal = self.target_charger
         elif self.carrying:
-            goal = self.current_task["dropoff"]
+            goal = tuple(self.current_task["dropoff"])
         else:
-            goal = self.current_task["pickup"]
+            goal = tuple(self.current_task["pickup"])
         
         occupied = set((p[0], p[1]) for p in self.known_peer_positions.values())
         path = a_star(self.warehouse, (self.x, self.y), goal, occupied)
@@ -373,23 +519,16 @@ class Robot:
         if self.carrying and self.current_task:
             return
         
-        nearest = min(
-            self.warehouse.charging_stations,
-            key=lambda c: abs(c[0] - self.x) + abs(c[1] - self.y),
-        )
+        pad = self._select_charger()
+        if pad is None:
+            return
         if self.current_task:
             self.abandoned_task = self.current_task
         self.current_task = None
         self.carrying = False
         self.status = "moving_to_charge"
-        occupied = set((p[0], p[1]) for p in self.known_peer_positions.values())
-        path = a_star(self.warehouse, (self.x, self.y), nearest, occupied)
-        if path is None:
-            path = a_star(self.warehouse, (self.x, self.y), nearest)
-        self.planned_path = path or []
-        self.path_index = 1 if self.planned_path and len(self.planned_path) > 1 else 0
-        if p2p_network:
-            self._broadcast_intent(p2p_network, tick)
+        self._claim_charger(pad, p2p_network, tick)
+        self._replan_path(p2p_network, tick)
     
     def calculate_bid(self, task: dict) -> float:
         pickup = task["pickup"]
@@ -401,6 +540,10 @@ class Robot:
         
         if self.status != "idle" or self.current_task is not None:
             return 0.0
+        # A unit that is about to detour for energy does not take new work: it
+        # would only abandon the package a tick later.
+        if self.target_charger is not None or self.battery <= BATTERY_LOW_THRESHOLD:
+            return 0.0
         
         return battery_factor / float(total_dist)
     
@@ -408,10 +551,11 @@ class Robot:
         self.current_task = task
         self.carrying = False
         self.status = "moving_to_pickup"
+        goal = tuple(task["pickup"])
         occupied = set((p[0], p[1]) for p in self.known_peer_positions.values())
-        path = a_star(self.warehouse, (self.x, self.y), task["pickup"], occupied)
+        path = a_star(self.warehouse, (self.x, self.y), goal, occupied)
         if path is None:
-            path = a_star(self.warehouse, (self.x, self.y), task["pickup"])
+            path = a_star(self.warehouse, (self.x, self.y), goal)
         self.planned_path = path or []
         self.path_index = 1 if self.planned_path and len(self.planned_path) > 1 else 0
     
@@ -427,6 +571,7 @@ class Robot:
             "prev_y": self.prev_y,
             "heading": self.heading,
             "battery": round(self.battery, 1),
+            "battery_low": self.battery <= BATTERY_LOW_THRESHOLD,
             "status": status_str,
             "is_yielding": getattr(self, "is_yielding", False),
             "task": self.current_task,
@@ -437,4 +582,7 @@ class Robot:
             "tasks_completed": self.tasks_completed,
             "total_distance": self.total_distance,
             "wait_ticks": self.wait_ticks,
+            "charger": list(self.target_charger) if self.target_charger else None,
+            "charger_label": self._charger_label(self.target_charger) if self.target_charger else None,
+            "charge_cycles": self.charge_cycles,
         }
