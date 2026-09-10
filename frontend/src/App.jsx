@@ -32,10 +32,10 @@ export default function App() {
     <main className="demo-layout">
       <section className="demo-viewport" aria-label="Interactive warehouse digital twin">
         <SceneBoundary><Scene /></SceneBoundary>
-        {help && <div className="watch-guide"><div><strong>Watch a package move</strong><p>Start the demo, select a unit and choose Follow. Watch it put a carton away in a rack slot, then watch another unit pick that slot and ship it. Press “Force low battery” to see a unit book a charge pad over the mesh, hand its package back and dock.</p></div><button aria-label="Dismiss viewing guide" onClick={() => setHelp(false)}>×</button></div>}
+        {help && <div className="watch-guide"><div><strong>Watch a carton move</strong><p>All twelve tables start with one carton; the racks start empty. Select a unit, choose Follow, and watch it lift the carton off a table, carry it and slide it into its reserved rack slot — the table stays empty afterwards. When the last carton is stored, the fleet books charge pads over the mesh and docks. Press “Force low battery” to trigger a charge run mid-round.</p></div><button aria-label="Dismiss viewing guide" onClick={() => setHelp(false)}>×</button></div>}
         {connectionError && connected && <div className="connection-notice" role="status">{connectionError}</div>}
         {!connected && <div className="connection-notice" role="status">{connectionError || 'Waiting for the simulation server on port 8000. No live values are fabricated.'}</div>}
-        <div className="viewport-caption"><span>RECEIVE → PUTAWAY → STORE · PICK → PACK → DISPATCH</span><span>Drag to orbit · Scroll to zoom</span></div>
+        <div className="viewport-caption"><span>RECEIVE → PUTAWAY → STORE · then DOCK → CHARGE</span><span>Drag to orbit · Scroll to zoom</span></div>
       </section>
       <aside className="demo-dashboard" aria-label="Fleet controls and telemetry"><Dashboard /></aside>
     </main>
