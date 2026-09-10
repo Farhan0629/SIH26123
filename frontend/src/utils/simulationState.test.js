@@ -36,3 +36,8 @@ test('getRobotStatusMeta prioritizes carrying state for transport label', () => 
   assert.deepEqual(getRobotStatusMeta({ status: 'moving_to_dropoff', has_cargo: true }), { label: 'Transporting', tone: 'cobalt' })
   assert.deepEqual(getRobotStatusMeta({ status: 'charging', has_cargo: true }), { label: 'Charging', tone: 'green' })
 })
+
+test('rack transfers read as storage work, not generic pick and place', () => {
+  assert.equal(getRobotStatusMeta({ handling: { kind: 'dropoff', place: 'rack' } }).label, 'Storing in rack')
+  assert.equal(getRobotStatusMeta({ handling: { kind: 'pickup', place: 'rack' } }).label, 'Picking from rack')
+})

@@ -32,10 +32,10 @@ export default function App() {
     <main className="demo-layout">
       <section className="demo-viewport" aria-label="Interactive warehouse digital twin">
         <SceneBoundary><Scene /></SceneBoundary>
-        {help && <div className="watch-guide"><div><strong>Watch a package move</strong><p>Start the demo. Select a unit, then choose Follow. Watch it reach, lift, carry, and place the labeled carton.</p></div><button aria-label="Dismiss viewing guide" onClick={() => setHelp(false)}>×</button></div>}
+        {help && <div className="watch-guide"><div><strong>Watch a package move</strong><p>Start the demo, select a unit and choose Follow. Watch it put a carton away in a rack slot, then watch another unit pick that slot and ship it. Press “Force low battery” to see a unit book a charge pad over the mesh, hand its package back and dock.</p></div><button aria-label="Dismiss viewing guide" onClick={() => setHelp(false)}>×</button></div>}
         {connectionError && connected && <div className="connection-notice" role="status">{connectionError}</div>}
         {!connected && <div className="connection-notice" role="status">{connectionError || 'Waiting for the simulation server on port 8000. No live values are fabricated.'}</div>}
-        <div className="viewport-caption"><span>RECEIVE → PICK UP → TRANSPORT → DELIVER</span><span>Drag to orbit · Scroll to zoom</span></div>
+        <div className="viewport-caption"><span>RECEIVE → PUTAWAY → STORE · PICK → PACK → DISPATCH</span><span>Drag to orbit · Scroll to zoom</span></div>
       </section>
       <aside className="demo-dashboard" aria-label="Fleet controls and telemetry"><Dashboard /></aside>
     </main>
