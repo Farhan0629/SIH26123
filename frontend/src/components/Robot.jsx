@@ -1,10 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
+import { CatmullRomCurve3, Vector3 } from 'three'
 import useStore from '../store'
 import CargoBox from './CargoBox'
 import PathTrail from './PathTrail'
-import { RIG, headingToYaw, angleDelta, createMotion, queueMotion, advanceMotion, transferPose } from '../utils/presentation.js'
+import { RIG, STATION, RACK_STATION_LOW, RACK_STATION_HIGH, headingToYaw, angleDelta, createMotion, queueMotion, advanceMotion, transferPose, batteryTone } from '../utils/presentation.js'
 
 const ACCENTS = ['#2864b7', '#98702a', '#398270', '#8551a2', '#b24e5e']
 const SHELL = '#e5eaf0', JOINT = '#243141'
@@ -45,6 +46,54 @@ function Leg({ side, hip, knee }) {
     </group>
   </group>
 }
+// Swappable battery pack, mounted on the unit's back with the service cable
+// coiled underneath it. The four bars are the state of charge, so a judge can
+// read a unit's energy off the robot itself, not only off the dashboard.
+function BatteryPack({ level = 100, charging = false }) {
+  const glow = useRef()
+  const tone = batteryTone(level)
+  useFrame((state) => {
+    if (!glow.current) return
+    glow.current.material.opacity = charging ? 0.18 + 0.3 * (0.5 + 0.5 * Math.sin(state.clock.elapsedTime * 4.5)) : 0
+  })
+  return <group position={[0, 1.16, -0.2]}>
+    <mesh castShadow><boxGeometry args={[0.215, 0.245, 0.085]} /><meshStandardMaterial color="#1b2736" metalness={0.55} roughness={0.42} /></mesh>
+    {[0, 1, 2, 3].map((i) => <mesh key={i} position={[0, -0.081 + i * 0.054, -0.045]}>
+      <boxGeometry args={[0.135, 0.032, 0.006]} />
+      <meshBasicMaterial color={level > i * 25 ? tone : '#33414f'} />
+    </mesh>)}
+    {/* coiled charge lead, stowed on the pack until the unit docks */}
+    <mesh position={[0, -0.15, -0.028]} rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[0.055, 0.015, 8, 18]} /><meshStandardMaterial color={JOINT} roughness={0.72} /></mesh>
+    <mesh position={[0, -0.155, -0.09]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[0.019, 0.019, 0.06, 8]} /><meshStandardMaterial color="#a1aebb" metalness={0.7} roughness={0.3} /></mesh>
+    <mesh ref={glow} position={[0, 0, -0.055]} rotation={[0, Math.PI, 0]}><planeGeometry args={[0.4, 0.44]} /><meshBasicMaterial color="#6ee7a8" transparent opacity={0} depthWrite={false} /></mesh>
+  </group>
+}
+// The plugged-in cable lives in world space, NOT inside the robot's rotating
+// group: one end is bolted to the charge post and must not swing when the unit
+// turns on the pad. The travelling highlight is the energy flowing in.
+function ChargeCable({ charger, x, y, heading, active }) {
+  const pulse = useRef()
+  const curve = useMemo(() => {
+    if (!charger) return null
+    const [cx, cy] = charger
+    const post = new Vector3(cx + 0.5, 0.62, cy + 0.5 + (cy < 10 ? -0.42 : 0.42))
+    const radians = (heading || 0) * Math.PI / 180
+    const back = new Vector3(x + 0.5 - Math.cos(radians) * 0.19, 1.12, y + 0.5 - Math.sin(radians) * 0.19)
+    const droop = post.clone().lerp(back, 0.5)
+    droop.y = 0.3
+    return new CatmullRomCurve3([post, droop, back])
+  }, [charger, x, y, heading])
+  useFrame((state) => {
+    if (!pulse.current || !curve) return
+    const point = curve.getPointAt((state.clock.elapsedTime * 0.4) % 1)
+    pulse.current.position.set(point.x, point.y, point.z)
+  })
+  if (!active || !curve) return null
+  return <group>
+    <mesh><tubeGeometry args={[curve, 26, 0.022, 6, false]} /><meshStandardMaterial color={JOINT} roughness={0.68} /></mesh>
+    <mesh ref={pulse}><sphereGeometry args={[0.048, 10, 8]} /><meshBasicMaterial color="#7bf1a8" /></mesh>
+  </group>
+}
 
 export default function Robot({ robot, selected = false, onSelect }) {
   const root = useRef(), body = useRef(), cargo = useRef()
@@ -58,6 +107,7 @@ export default function Robot({ robot, selected = false, onSelect }) {
   const connected = useStore((s) => s.connected)
   const routes = useStore((s) => s.showRoutes)
   const network = useStore((s) => s.network)
+  const shelfView = useStore((s) => s.shelfView)
   const color = ACCENTS[(robot.id - 1) % ACCENTS.length]
   const handling = robot.handling
   const hasPackage = Boolean(robot.has_cargo || handling)
@@ -65,6 +115,11 @@ export default function Robot({ robot, selected = false, onSelect }) {
   const paused = sim.paused || !connected
   const name = robot.name || `UNIT ${String(robot.id).padStart(2, '0')}`
   const offline = (network?.partitioned ?? []).includes(robot.id)
+  const charging = robot.status === 'charging'
+  const battery = robot.battery ?? 100
+  // A rack transfer meets the shelf deck, not a table top, and the deck height
+  // follows the same low-rack toggle the shelving itself uses.
+  const station = handling?.place === 'rack' ? (shelfView === 'lowRack' ? RACK_STATION_LOW : RACK_STATION_HIGH) : STATION
 
   useEffect(() => {
     queueMotion(motion.current, robot.x + 0.5, robot.y + 0.5, 0.1 / Math.max(0.1, sim.speed), reduced)
@@ -75,7 +130,9 @@ export default function Robot({ robot, selected = false, onSelect }) {
     const delta = Math.min(rawDelta, 0.05)
     const distance = advanceMotion(motion.current, delta, paused)
     root.current.position.set(motion.current.x, 0, motion.current.z)
-    const desiredYaw = headingToYaw(handling ? 0 : robot.heading)
+    // During a transfer the unit squares up to whatever it is serving: a table
+    // (face 0) or the rack face it is reaching into.
+    const desiredYaw = headingToYaw(handling ? (handling.face ?? 0) : robot.heading)
     if (reduced) yaw.current = desiredYaw
     else if (!paused) yaw.current += angleDelta(yaw.current, desiredYaw) * (1 - Math.exp(-14 * delta))
     root.current.rotation.y = yaw.current
@@ -89,13 +146,13 @@ export default function Robot({ robot, selected = false, onSelect }) {
       leftKnee.current.rotation.x = Math.max(0, -swing) * 0.55
       rightKnee.current.rotation.x = Math.max(0, swing) * 0.55
       body.current.position.y = 0
-      const pose = transferPose(handling)
+      const pose = transferPose(handling, station)
       const arm = hasPackage ? -0.28 - pose.reach * 0.24 : -swing * 0.4
       leftArm.current.rotation.x = arm
       rightArm.current.rotation.x = hasPackage ? arm : swing * 0.4
       leftElbow.current.rotation.x = rightElbow.current.rotation.x = hasPackage ? -1.18 + pose.reach * 0.25 : -0.15
     }
-    if (cargo.current) cargo.current.position.set(...transferPose(handling).position)
+    if (cargo.current) cargo.current.position.set(...transferPose(handling, station).position)
   })
 
   return <>
@@ -105,8 +162,9 @@ export default function Robot({ robot, selected = false, onSelect }) {
         <Shell at={[0, 0.86, 0]} size={[0.21, 0.10, 0.135]} color={JOINT} />
         <Shell at={[0, RIG.chest, 0]} size={[0.23, 0.25, 0.15]} />
         <Shell at={[0, 1.22, 0.125]} size={[0.165, 0.135, 0.05]} color={color} />
-        <mesh position={[0, 1.08, 0.15]}><boxGeometry args={[0.18, 0.035, 0.012]} /><meshBasicMaterial color={offline ? '#e0546a' : handling ? '#f2b544' : '#9ed8d3'} /></mesh>
+        <mesh position={[0, 1.08, 0.15]}><boxGeometry args={[0.18, 0.035, 0.012]} /><meshBasicMaterial color={offline ? '#e0546a' : charging ? '#6ee7a8' : handling ? '#f2b544' : '#9ed8d3'} /></mesh>
         <Shell at={[0, 1.18, -0.15]} size={[0.16, 0.18, 0.072]} color={JOINT} />
+        <BatteryPack level={battery} charging={charging} />
         <Joint at={[0, 1.43, 0]} radius={0.065} />
         <Shell at={[0, RIG.head, 0]} size={[0.165, 0.17, 0.145]} />
         <Shell at={[0, RIG.head + 0.005, 0.113]} size={[0.137, 0.078, 0.06]} color="#101e30" />
@@ -115,17 +173,18 @@ export default function Robot({ robot, selected = false, onSelect }) {
         <Arm side={1} upper={rightArm} elbow={rightElbow} color={color} />
         <Leg side={-1} hip={leftHip} knee={leftKnee} />
         <Leg side={1} hip={rightHip} knee={rightKnee} />
-        {hasPackage && <group ref={cargo} position={transferPose(handling).position}><CargoBox taskId={taskId} scale={1} /></group>}
+        {hasPackage && <group ref={cargo} position={transferPose(handling, station).position}><CargoBox taskId={taskId} scale={1} /></group>}
       </group>
       {/* The only screen-space label left in the scene: the unit's name, kept
           small. Live status moved to the dashboard inspector, and every other
           floor label is now a 3D sign. */}
       <Html position={[0, 1.82, 0]} center zIndexRange={[12, 0]} style={{ pointerEvents: 'none' }}>
-        <button onClick={() => onSelect?.(robot.id)} aria-label={`Inspect ${name}${offline ? ', radio offline' : ''}`} style={{ pointerEvents: 'auto', whiteSpace: 'nowrap', padding: '2px 8px', fontSize: 11, lineHeight: '16px', fontWeight: 600, letterSpacing: '0.02em', borderRadius: 999, border: `1px solid ${offline ? '#e0546a' : color}`, background: selected ? color : '#ffffffee', color: selected ? '#ffffff' : '#243141', boxShadow: '0 1px 4px #15243826' }}>
-          {name}{offline ? ' ✕' : ''}
+        <button onClick={() => onSelect?.(robot.id)} aria-label={`Inspect ${name}${offline ? ', radio offline' : ''}${charging ? `, charging at ${Math.round(battery)} percent` : ''}`} style={{ pointerEvents: 'auto', whiteSpace: 'nowrap', padding: '2px 8px', fontSize: 11, lineHeight: '16px', fontWeight: 600, letterSpacing: '0.02em', borderRadius: 999, border: `1px solid ${offline ? '#e0546a' : charging ? '#297359' : color}`, background: selected ? color : '#ffffffee', color: selected ? '#ffffff' : '#243141', boxShadow: '0 1px 4px #15243826' }}>
+          {name}{offline ? ' ✕' : ''}{charging ? ` ⚡${Math.round(battery)}%` : ''}
         </button>
       </Html>
     </group>
+    <ChargeCable charger={robot.charger} x={robot.x} y={robot.y} heading={robot.heading} active={charging} />
     {routes && robot.planned_path?.length > 0 && <PathTrail path={robot.planned_path} color={color} />}
   </>
 }
