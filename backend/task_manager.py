@@ -2,38 +2,41 @@ import random
 
 from config import robot_name
 
-# Which rack island each staged package is routed to. The order deliberately
-# hops between bands and columns so the six putaway runs use different aisles
-# instead of queueing into one corridor.
-ISLAND_ORDER = (0, 4, 8, 2, 3, 7, 1, 5, 6)
+# Which rack island each staged carton is routed to. The order deliberately
+# hops between bands and columns so the twelve putaway runs spread over the
+# aisles instead of queueing into one corridor.
+ISLAND_ORDER = (0, 4, 8, 2, 6, 1, 5, 7, 3)
 
 
 class Task:
-    """One package and the legs it still has to travel.
+    """One physical carton and the single leg it has to travel.
 
-    A package is a single unit of work with a stable id, so "package #3" means
-    the same carton from the moment it is staged to the moment it leaves on a
-    delivery table. What changes is its stage:
+    A carton has a stable id and exactly ONE location at any moment: the
+    staging table it was received on, the arms of the unit carrying it, or the
+    rack slot it was put away in. There is no stage in which it exists twice,
+    and none in which it appears from nowhere.
 
-      direct      loading table -> delivery table          (benchmark mode)
-      putaway     loading table -> rack slot   (RECEIVE -> PUTAWAY -> STORE)
-      retrieval   rack slot     -> delivery table (PICK -> PACK -> DISPATCH)
+      direct    loading table -> delivery table   (headless benchmark only)
+      putaway   staging table -> rack slot        RECEIVE -> PUTAWAY -> STORE
 
-    The retrieval leg is returned to the auction, so the unit that stores a
-    carton is usually not the unit that ships it.
+    A putaway task is finished when the carton is on the shelf, and it stays
+    there. Stored inventory is never pulled back out to manufacture more work,
+    which is exactly the illusion the earlier two-leg cycle created on screen.
     """
     _counter = 0
 
-    def __init__(self, pickup, dropoff, stage="direct", slot=None, origin=None, destination=None):
+    def __init__(self, pickup, dropoff, stage="direct", slot=None, table=None, destination=None):
         Task._counter += 1
         self.id = Task._counter
         self.pickup = pickup
         self.dropoff = dropoff
         self.assigned_to = None  # robot_id or None
         self.status = "pending"  # "pending" | "assigned" | "completed"
-        self.stage = stage       # "direct" | "putaway" | "retrieval"
-        self.origin = origin or pickup            # loading table it arrived at
-        self.destination = destination or dropoff  # delivery table it ships from
+        self.stage = stage       # "direct" | "putaway"
+        self.origin = pickup                      # table the carton arrived on
+        self.destination = destination or dropoff  # where it ends up resting
+        self.table_id = table["id"] if table else None
+        self.table_code = table["code"] if table else None
         self.slot_id = slot["id"] if slot else None
         self.slot_code = slot["code"] if slot else None
         self.slot_cell = tuple(slot["cell"]) if slot else None
@@ -42,7 +45,7 @@ class Task:
         self.dropoff_kind = "rack" if stage == "putaway" else "table"
 
     def as_payload(self) -> dict:
-        """What a robot (and the 3D view) needs to know about the current leg."""
+        """What a robot (and the 3D view) needs to know about this carton."""
         return {
             "id": self.id,
             "pickup": self.pickup,
@@ -50,6 +53,7 @@ class Task:
             "stage": self.stage,
             "pickup_kind": self.pickup_kind,
             "dropoff_kind": self.dropoff_kind,
+            "table_code": self.table_code,
             "slot_code": self.slot_code,
             "slot_cell": list(self.slot_cell) if self.slot_cell else None,
             "origin": list(self.origin),
@@ -73,7 +77,7 @@ class TaskManager:
         self.stored_count = 0
 
     def _choose_slot(self, index: int, pickup: tuple[int, int]) -> dict | None:
-        """Pick an empty rack slot for the package staged at `pickup`."""
+        """Reserve an empty rack slot for the carton staged at `pickup`."""
         islands = getattr(self.warehouse, "rack_islands", [])
         slots = getattr(self.warehouse, "rack_slots", [])
         if not islands or not slots:
@@ -85,50 +89,63 @@ class TaskManager:
         if not candidates:
             return None
         # Within the island, take the face nearest the staging table so the
-        # putaway leg approaches from the aisle it is already travelling.
+        # putaway run approaches from the aisle it is already travelling.
         return min(
             candidates,
-            key=lambda slot: (abs(slot["access"][1] - pickup[1]), slot["access"][0], slot["id"]),
+            key=lambda slot: (
+                abs(slot["access"][0] - pickup[0]) + abs(slot["access"][1] - pickup[1]),
+                slot["id"],
+            ),
         )
 
     def generate_manifest(self, pairing: list[int] | None = None, storage: bool = False) -> list[Task]:
-        """Stage exactly one package per loading table.
+        """Stage the round before the clock starts. Nothing spawns later.
 
-        By default loading table N is paired with the delivery table at the
-        opposite end of the floor (reversed order), so every route crosses the
-        warehouse and the fleet meets in the aisles instead of running parallel
-        lanes.
+        `storage=True` builds the demonstration round: one carton on every one
+        of the twelve staging tables, each with a rack slot reserved for it.
+        The fleet then moves them one at a time, table -> arms -> shelf.
 
-        `pairing` optionally supplies delivery-table indices (a permutation) so
-        the headless benchmark can vary the manifest between episodes while
-        keeping the same rule: six packages, staged once, before the clock
-        starts. Nothing is ever created mid-episode.
-
-        `storage=True` runs the full warehouse cycle: each package is first put
-        away into a reserved rack slot and only then picked and dispatched. The
-        manifest size is still six packages - a stored carton is the same
-        package mid-journey, not a new one - so mission progress stays honest.
+        Without `storage` the original benchmark manifest is produced: six
+        cartons on the west loading tables, paired with delivery tables on the
+        east (reversed, so every route crosses the floor). `pairing` supplies
+        delivery-table indices so the headless benchmark can vary the manifest
+        between episodes while keeping the same rule.
         """
+        if storage:
+            return self._generate_storage_round()
+
         pickups = list(self.warehouse.pickup_points)
         dropoffs = list(self.warehouse.dropoff_points)
-        if pairing is None:
-            targets = list(reversed(dropoffs))
-        else:
-            targets = [dropoffs[index] for index in pairing]
-        for index, (pickup, dropoff) in enumerate(zip(pickups, targets)):
-            slot = self._choose_slot(index, pickup) if storage else None
+        targets = list(reversed(dropoffs)) if pairing is None else [dropoffs[index] for index in pairing]
+        for pickup, dropoff in zip(pickups, targets):
+            task = Task(pickup=pickup, dropoff=dropoff)
+            self.pending_tasks.append(task)
+            self.all_tasks.append(task)
+        return list(self.all_tasks)
+
+    def _generate_storage_round(self) -> list[Task]:
+        """One carton per staging table, one reserved slot per carton.
+
+        The floor is fully described before the first tick: twelve loaded
+        tables, twelve reserved slots, twelve cartons. Every carton a judge
+        sees on screen can be traced back to the table it was received on.
+        """
+        self.warehouse.reset_tables()
+        self.warehouse.reset_racks()
+        for index, table in enumerate(list(self.warehouse.tables)):
+            slot = self._choose_slot(index, table["cell"])
             if slot is None:
-                task = Task(pickup=pickup, dropoff=dropoff)
-            else:
-                task = Task(
-                    pickup=pickup,
-                    dropoff=tuple(slot["access"]),
-                    stage="putaway",
-                    slot=slot,
-                    origin=pickup,
-                    destination=dropoff,
-                )
-                self.warehouse.reserve_slot(slot["id"], task.id)
+                break  # no free slot left: stage fewer cartons, never fake one
+            task = Task(
+                pickup=table["cell"],
+                dropoff=tuple(slot["access"]),
+                stage="putaway",
+                slot=slot,
+                table=table,
+                destination=tuple(slot["cell"]),
+            )
+            self.warehouse.reserve_slot(slot["id"], task.id)
+            self.warehouse.load_table(table["cell"], task.id)
             self.pending_tasks.append(task)
             self.all_tasks.append(task)
         return list(self.all_tasks)
@@ -147,6 +164,10 @@ class TaskManager:
             if task.id == task_id:
                 return task
         return None
+
+    def remaining(self) -> int:
+        """Cartons still to be moved. Zero means the round is over."""
+        return len(self.pending_tasks) + len(self.active_tasks)
 
     def allocate_tasks(self, robots: list, p2p_network, event_logger=None, tick: int = 0) -> list[dict]:
         """
@@ -217,13 +238,13 @@ class TaskManager:
 
             if event_logger:
                 winner_label = getattr(winner, "name", None) or robot_name(winner_id)
-                leg = {
-                    "putaway": f"putaway to rack slot {task.slot_code}",
-                    "retrieval": f"pick from rack slot {task.slot_code}",
-                }.get(task.stage, "delivery run")
+                leg = (
+                    f"putaway from table {task.table_code} to rack slot {task.slot_code}"
+                    if task.stage == "putaway" else "delivery run"
+                )
                 event_logger.add_event(
                     "auction",
-                    f"Package #{task.id} {leg} awarded to {winner_label} \u2014 highest bid in the fleet auction",
+                    f"Package #{task.id} {leg} awarded to {winner_label} \\u2014 highest bid in the fleet auction",
                     robot_id=winner_id,
                     tick=tick
                 )
@@ -232,51 +253,47 @@ class TaskManager:
 
         return assignments
 
-    def note_pickup(self, task_id: int):
-        """A carton has physically left its source.
+    def note_pickup(self, task_id: int) -> bool:
+        """The carton has physically left its source.
 
-        For a retrieval leg that frees the rack slot immediately, so the 3D
-        view shows an empty shelf the moment the unit lifts the carton out.
+        Called the moment a unit starts lifting, so the table it came from
+        reads as empty for the whole transfer instead of holding a ghost copy
+        of a carton that is already in the robot's arms.
         """
         task = self.find_task(task_id)
-        if task and task.stage == "retrieval" and task.slot_id is not None:
-            self.warehouse.release_slot(task.slot_id)
+        if task is None:
+            return False
+        if task.pickup_kind == "table":
+            return self.warehouse.mark_table_empty(task.pickup)
+        if task.slot_id is not None:
+            return self.warehouse.release_slot(task.slot_id)
+        return False
 
     def complete_leg(self, task_id: int):
-        """Finish the leg a unit just delivered.
+        """Finish the leg a unit just completed.
 
-        Returns ("stored", task) when a putaway leg finished and the retrieval
-        order was queued, ("delivered", task) when the package left the floor,
-        or (None, None) if the task was not active.
+        Returns ("stored", task) when a carton was put away in its rack slot,
+        ("delivered", task) when a benchmark-style delivery finished, or
+        (None, None) if the task was not active.
         """
         for task in self.active_tasks[:]:
             if task.id != task_id:
                 continue
-            if task.stage == "putaway":
-                if task.slot_id is not None:
-                    self.warehouse.mark_slot_stored(task.slot_id)
-                task.stage = "retrieval"
-                task.pickup = task.slot_access
-                task.pickup_kind = "rack"
-                task.dropoff = task.destination
-                task.dropoff_kind = "table"
-                task.assigned_to = None
-                task.status = "pending"
-                self.active_tasks.remove(task)
-                self.pending_tasks.insert(0, task)
+            if task.stage == "putaway" and task.slot_id is not None:
+                # The slot now physically holds this carton and keeps it.
+                self.warehouse.mark_slot_stored(task.slot_id)
                 self.stored_count += 1
-                return "stored", task
-
+                outcome = "stored"
+            else:
+                outcome = "delivered"
             task.status = "completed"
-            if task.slot_id is not None:
-                self.warehouse.release_slot(task.slot_id)
             self.active_tasks.remove(task)
             self.completed_tasks.append(task)
-            return "delivered", task
+            return outcome, task
         return None, None
 
     def mark_completed(self, task_id: int):
-        """Mark a task as completed (advances multi-leg packages)."""
+        """Mark a task as completed."""
         return self.complete_leg(task_id)[0]
 
     def _serialize(self, task: Task, with_owner: bool = False) -> dict:
@@ -287,6 +304,7 @@ class TaskManager:
             "stage": task.stage,
             "pickup_kind": task.pickup_kind,
             "dropoff_kind": task.dropoff_kind,
+            "table_code": task.table_code,
             "slot_code": task.slot_code,
             "slot_cell": list(task.slot_cell) if task.slot_cell else None,
             "destination": list(task.destination),
@@ -305,4 +323,5 @@ class TaskManager:
             "total_count": len(self.all_tasks),
             "stored_count": self.stored_count,
             "in_racks": len([s for s in getattr(self.warehouse, "rack_slots", []) if s["state"] == "stored"]),
+            "tables_loaded": len(self.warehouse.loaded_tables()) if hasattr(self.warehouse, "loaded_tables") else 0,
         }

@@ -60,20 +60,26 @@ LOOKAHEAD_WINDOW = 5     # check next 5 steps for conflicts
 SAFETY_DISTANCE = 1      # minimum cells between robots
 
 # ─── Task Settings ───
-# The demonstration floor is a fixed manifest: six staged packages on the west
-# loading tables, six empty delivery tables on the east. Nothing spawns
-# mid-episode, so every package on screen has a visible origin.
+# The headless benchmark uses a fixed six-package manifest: one carton per west
+# loading table, paired with a delivery table on the east. Nothing spawns
+# mid-episode, so every package has a visible origin.
 TASKS_PER_EPISODE = 6
 TASK_SPAWN_INTERVAL = 10  # legacy knob, unused by the fixed-manifest benchmark
 
-# Storage & retrieval. With the flow enabled every package runs a real two-leg
-# warehouse cycle instead of a single cross-floor hop:
-#   RECEIVE -> PUTAWAY -> STORE      loading table  -> rack slot
-#   PICK    -> PACK    -> DISPATCH   rack slot      -> delivery table
-# The second leg is re-auctioned, so the unit that stores a carton is usually
-# not the unit that ships it - which is exactly the decentralized handoff the
-# problem statement asks for.
+# ─── Storage round (web demonstration) ───
+# The demonstration floor is a receiving round, and it is deliberately literal:
+#   * every one of the twelve staging tables starts with exactly one carton,
+#   * a unit drives to a table, lifts THAT carton, carries it, and slides it
+#     into its reserved rack slot:  RECEIVE -> PUTAWAY -> STORE,
+#   * the carton stays on the shelf - stored inventory is not teleported back
+#     out of the rack to invent more work.
+# A carton therefore has exactly one location at every moment (table, arms or
+# slot). Nothing is created, duplicated or removed mid-episode.
 STORAGE_FLOW_ENABLED = True
+STAGED_TABLES = 12               # 6 west + 6 east, one carton each
+# When the last carton is on the shelf the round is over: every unit books a
+# pad over the mesh, drives to it, plugs in and parks for the shift.
+END_OF_ROUND_CHARGE = True
 
 # ─── P2P Communication ───
 P2P_BROADCAST_INTERVAL = 1  # ticks between position broadcasts (10Hz)
