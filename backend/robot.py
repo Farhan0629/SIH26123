@@ -49,6 +49,12 @@ class Robot:
         self.known_charger_claims = {}   # {(x,y): (robot_id, cost)}
         self.charge_cycles = 0
         self.charge_started_tick = None
+        self.charge_started_battery = None
+        self.charge_reason = None        # "low_battery" | "end_of_round"
+        # True once the round is finished and this unit is docked on its pad
+        # for the shift. A parked unit does not bid, does not wander and does
+        # not give up the pad it is standing on.
+        self.parked = False
         self._deferred_charge_logged = False
         
         # Decentralized knowledge (learned from P2P messages ONLY)
@@ -111,7 +117,7 @@ class Robot:
                 if self.target_charger is not None:
                     pad = self._charger_label(self.target_charger)
                     detail = (
-                        f" \u2014 package #{abandoned_id} handed back to the auction"
+                        f" \\u2014 package #{abandoned_id} handed back to the auction"
                         if abandoned_id else ""
                     )
                     event_logger.add_event(
@@ -174,7 +180,7 @@ class Robot:
             },
         )
     
-    # ─── Charging pad negotiation ───────────────────────────────────────
+    # ─── Charging pad negotiation ─────────────────────────────────────────
     
     def _charge_cost(self, pad) -> int:
         return abs(pad[0] - self.x) + abs(pad[1] - self.y)
@@ -266,23 +272,60 @@ class Robot:
         self.planned_path = []
         self.path_index = 0
         self.charge_started_tick = tick
+        self.charge_started_battery = self.battery
         if event_logger:
+            reason = (
+                " \\u2014 round complete, parking for the shift"
+                if self.charge_reason == "end_of_round" else " \\u2014 cable connected"
+            )
             event_logger.add_event(
                 "charging",
-                f"{self.name} docked at {self._charger_label(self.target_charger)} with {self.battery:.0f}% \u2014 cable connected",
+                f"{self.name} docked at {self._charger_label(self.target_charger)} with {self.battery:.0f}%{reason}",
                 robot_id=self.id,
                 tick=tick,
             )
         return "charging"
+
+    def park_for_charging(self, p2p_network=None, tick: int = 0, event_logger=None) -> bool:
+        """End of round: book a pad, drive to it and stay there.
+
+        Called once the manifest is empty. It uses exactly the same mesh
+        negotiation as a low-battery detour, so two units still never claim the
+        same pad, and it refuses to run while the unit is holding a carton.
+        """
+        if self.parked or self.carrying or self.current_task is not None:
+            return False
+        if self.status == "charging" or self.target_charger is not None:
+            return False
+        pad = self._select_charger()
+        if pad is None:
+            return False
+        self.charge_reason = "end_of_round"
+        self.status = "moving_to_charge"
+        self._claim_charger(pad, p2p_network, tick)
+        self._replan_path(p2p_network, tick)
+        if event_logger:
+            event_logger.add_event(
+                "charging",
+                f"{self.name} finished the round at {self.battery:.0f}% and claimed "
+                f"{self._charger_label(pad)} over the mesh to dock and charge",
+                robot_id=self.id,
+                tick=tick,
+            )
+        return True
     
     def _decide_and_act(self, tick: int, p2p_network, event_logger=None) -> str:
         self.is_yielding = False
         
-        # Pad bookings are renegotiated before anything else moves.
-        if self.target_charger is not None and self.status != "charging":
+        # Pad bookings are renegotiated before anything else moves. A unit that
+        # is already parked on its pad keeps it - it is physically there.
+        if self.target_charger is not None and self.status != "charging" and not self.parked:
             self._resolve_charger_conflict(p2p_network, tick, event_logger)
         
         if self.status == "idle":
+            # A parked unit is docked on its pad and stays put.
+            if self.parked:
+                return "idle"
             # If an active peer intends to enter our cell on its next step, politely yield/step aside
             for peer_id, intent in self.known_peer_intents.items():
                 if intent and (intent[0] == (self.x, self.y) or (self.x, self.y) in intent[:3]):
@@ -301,20 +344,39 @@ class Robot:
         if self.status == "charging":
             self.battery = min(float(BATTERY_MAX), self.battery + BATTERY_CHARGE_PER_TICK)
             if self.battery >= BATTERY_CHARGED_LEVEL:
-                self.charge_cycles += 1
+                opening = self.charge_started_battery
+                gained = self.battery - opening if opening is not None else 0.0
+                end_of_round = self.charge_reason == "end_of_round"
                 pad_label = self._charger_label(self.target_charger)
-                self._release_charger(p2p_network, tick)
+                if gained >= 1.0:
+                    self.charge_cycles += 1
                 self.status = "idle"
                 self.charge_started_tick = None
+                self.charge_started_battery = None
+                self.charge_reason = None
                 self._deferred_charge_logged = False
+                if end_of_round:
+                    # Keep the pad: the unit is standing on it until the next
+                    # round starts, so the booking stays honest on the mesh.
+                    self.parked = True
+                else:
+                    self._release_charger(p2p_network, tick)
                 if event_logger:
-                    event_logger.add_event(
-                        "charging",
-                        f"{self.name} charged to {self.battery:.0f}%, released {pad_label} over the mesh and rejoined the auction",
-                        robot_id=self.id,
-                        tick=tick,
-                    )
-                return "charged"
+                    if end_of_round:
+                        event_logger.add_event(
+                            "charging",
+                            f"{self.name} is charged to {self.battery:.0f}% and parked on {pad_label} for the shift",
+                            robot_id=self.id,
+                            tick=tick,
+                        )
+                    else:
+                        event_logger.add_event(
+                            "charging",
+                            f"{self.name} charged to {self.battery:.0f}%, released {pad_label} over the mesh and rejoined the auction",
+                            robot_id=self.id,
+                            tick=tick,
+                        )
+                return "charged" if gained >= 1.0 else "parked"
             return "charging"
         
         # Check if already at goal
@@ -522,6 +584,7 @@ class Robot:
         pad = self._select_charger()
         if pad is None:
             return
+        self.charge_reason = "low_battery"
         if self.current_task:
             self.abandoned_task = self.current_task
         self.current_task = None
@@ -539,6 +602,9 @@ class Robot:
         battery_factor = self.battery / float(BATTERY_MAX)
         
         if self.status != "idle" or self.current_task is not None:
+            return 0.0
+        # A unit parked on its pad at the end of a round is off shift.
+        if self.parked:
             return 0.0
         # A unit that is about to detour for energy does not take new work: it
         # would only abandon the package a tick later.
@@ -585,4 +651,6 @@ class Robot:
             "charger": list(self.target_charger) if self.target_charger else None,
             "charger_label": self._charger_label(self.target_charger) if self.target_charger else None,
             "charge_cycles": self.charge_cycles,
+            "charge_reason": self.charge_reason,
+            "parked": self.parked,
         }
