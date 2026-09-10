@@ -19,6 +19,7 @@ export default function RobotStatus({ robot }) {
   const battery = Math.max(0, Math.min(100, robot.battery || 0))
   const charging = robot.status === 'charging'
   const heading = robot.status === 'moving_to_charge'
+  const parked = Boolean(robot.parked)
   const pad = robot.charger_label
 
   return (
@@ -39,9 +40,13 @@ export default function RobotStatus({ robot }) {
                 Radio offline
               </span>
             )}
-            {(charging || heading) && (
+            {(charging || heading || parked) && (
               <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">
-                {charging ? `Charging${pad ? ` · ${pad}` : ''}` : `Booked${pad ? ` ${pad}` : ' a pad'}`}
+                {charging
+                  ? `Charging${pad ? ` · ${pad}` : ''}`
+                  : parked
+                    ? `Parked${pad ? ` · ${pad}` : ''}`
+                    : `Booked${pad ? ` ${pad}` : ' a pad'}`}
               </span>
             )}
           </p>
@@ -65,10 +70,10 @@ export default function RobotStatus({ robot }) {
 
       <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-600">
         <p>Battery <span className="font-semibold" style={{ color: batteryTone(battery) }}>{Math.round(robot.battery)}%</span></p>
-        <p>Completed <span className="font-semibold text-slate-900">{robot.tasks_completed}</span></p>
+        <p>Put away <span className="font-semibold text-slate-900">{robot.tasks_completed}</span></p>
         <p>Location <span className="font-semibold text-slate-900">({robot.x},{robot.y})</span></p>
         <p>Charge runs <span className="font-semibold text-slate-900">{robot.charge_cycles ?? 0}</span></p>
-        <p className="col-span-2">{robot.has_cargo ? `Package PKG-${String(robot.carrying_task_id || robot.task?.id || 0).padStart(3, '0')}${robot.task?.slot_code ? ` · slot ${robot.task.slot_code}` : ''}` : 'No package'}</p>
+        <p className="col-span-2">{robot.has_cargo ? `Carrying PKG-${String(robot.carrying_task_id || robot.task?.id || 0).padStart(3, '0')}${robot.task?.table_code ? ` · from ${robot.task.table_code}` : ''}${robot.task?.slot_code ? ` → slot ${robot.task.slot_code}` : ''}` : 'Empty handed'}</p>
       </div>
 
       <p className="mt-2 text-xs text-slate-600">
