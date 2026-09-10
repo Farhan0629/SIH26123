@@ -38,6 +38,10 @@ CHAR_TO_CELL = {
     "C": CHARGING,
 }
 
+# Island rows are labelled A/B/C from north to south, columns 1..3 from west to
+# east, so a slot address reads like a real warehouse location: B2-03.
+RACK_BANDS = "ABCDEFGH"
+
 
 class Warehouse:
     """Warehouse grid map: neighbor lookup, walkability, and special cells."""
@@ -51,6 +55,12 @@ class Warehouse:
         self.charging_stations = []
         self._extract_special_cells()
         self.blocked_cells = set()
+        # Rack islands are real inventory locations, not scenery: every shelf
+        # cell with an adjacent aisle is an addressable slot that can hold one
+        # carton.
+        self.rack_slots: list[dict] = []
+        self.rack_islands: list[dict] = []
+        self._extract_rack_slots()
         # Physical floor occupancy, written by robots as they move. This stands
         # in for onboard proximity sensing: a robot can see a body in the next
         # cell even when its radio is down, exactly like a real LiDAR bumper.
@@ -73,6 +83,129 @@ class Warehouse:
                     self.dropoff_points.append((x, y))
                 elif val == CHARGING:
                     self.charging_stations.append((x, y))
+
+    # ─── Rack inventory ─────────────────────────────────────────────────
+
+    def _structurally_walkable(self, x: int, y: int) -> bool:
+        """Walkable ignoring temporary barriers.
+
+        A slot address is a property of the building, so a barrier dropped in
+        an aisle during a drill must not delete the address; it only makes the
+        route to it longer.
+        """
+        return (
+            0 <= x < self.width
+            and 0 <= y < self.height
+            and self.grid[y][x] not in (SHELF, WALL)
+        )
+
+    def _extract_rack_slots(self):
+        """Turn every contiguous shelf block into an addressable rack island."""
+        seen: set[tuple[int, int]] = set()
+        blocks: list[list[tuple[int, int]]] = []
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.grid[y][x] != SHELF or (x, y) in seen:
+                    continue
+                block: list[tuple[int, int]] = []
+                stack = [(x, y)]
+                while stack:
+                    cx, cy = stack.pop()
+                    if (cx, cy) in seen:
+                        continue
+                    if not (0 <= cx < self.width and 0 <= cy < self.height):
+                        continue
+                    if self.grid[cy][cx] != SHELF:
+                        continue
+                    seen.add((cx, cy))
+                    block.append((cx, cy))
+                    stack.extend([(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)])
+                blocks.append(sorted(block, key=lambda cell: (cell[1], cell[0])))
+
+        blocks.sort(key=lambda block: (block[0][1], block[0][0]))
+        bands = sorted({block[0][1] for block in blocks})
+        columns = sorted({block[0][0] for block in blocks})
+
+        for block in blocks:
+            band = bands.index(block[0][1])
+            column = columns.index(block[0][0])
+            letter = RACK_BANDS[band] if band < len(RACK_BANDS) else "Z"
+            island_code = f"{letter}{column + 1}"
+            slot_ids = []
+            for number, cell in enumerate(block, start=1):
+                access = None
+                # Prefer the west aisle, then east, then north, then south, so
+                # neighbouring islands hand their traffic to different aisles.
+                for candidate in (
+                    (cell[0] - 1, cell[1]),
+                    (cell[0] + 1, cell[1]),
+                    (cell[0], cell[1] - 1),
+                    (cell[0], cell[1] + 1),
+                ):
+                    if self._structurally_walkable(*candidate):
+                        access = candidate
+                        break
+                if access is None:
+                    continue  # a fully enclosed shelf cell is not addressable
+                slot = {
+                    "id": len(self.rack_slots),
+                    "code": f"{island_code}-{number:02d}",
+                    "island": island_code,
+                    "cell": cell,
+                    "access": access,
+                    "state": "empty",   # "empty" | "reserved" | "stored"
+                    "task_id": None,
+                }
+                self.rack_slots.append(slot)
+                slot_ids.append(slot["id"])
+            self.rack_islands.append({
+                "code": island_code,
+                "cell": block[0],
+                "size": len(block),
+                "slots": slot_ids,
+            })
+
+    def get_slot(self, slot_id: int) -> dict | None:
+        if slot_id is None or not (0 <= slot_id < len(self.rack_slots)):
+            return None
+        return self.rack_slots[slot_id]
+
+    def free_slots(self) -> list[dict]:
+        return [slot for slot in self.rack_slots if slot["state"] == "empty"]
+
+    def reserve_slot(self, slot_id: int, task_id: int) -> bool:
+        slot = self.get_slot(slot_id)
+        if slot is None or slot["state"] != "empty":
+            return False
+        slot["state"] = "reserved"
+        slot["task_id"] = task_id
+        return True
+
+    def mark_slot_stored(self, slot_id: int) -> bool:
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return False
+        slot["state"] = "stored"
+        return True
+
+    def release_slot(self, slot_id: int) -> bool:
+        slot = self.get_slot(slot_id)
+        if slot is None:
+            return False
+        slot["state"] = "empty"
+        slot["task_id"] = None
+        return True
+
+    def reset_racks(self):
+        """Empty every slot. Called when a demonstration restarts."""
+        for slot in self.rack_slots:
+            slot["state"] = "empty"
+            slot["task_id"] = None
+
+    def stored_slots(self) -> list[dict]:
+        return [slot for slot in self.rack_slots if slot["state"] == "stored"]
+
+    # ─── Navigation ─────────────────────────────────────────────────────
 
     def is_walkable(self, x: int, y: int) -> bool:
         """Return True if cell (x,y) is in bounds, not SHELF/WALL, not blocked."""
@@ -107,4 +240,20 @@ class Warehouse:
             "pickups": self.pickup_points,
             "dropoffs": self.dropoff_points,
             "chargers": self.charging_stations,
+            "racks": [
+                {
+                    "id": slot["id"],
+                    "code": slot["code"],
+                    "island": slot["island"],
+                    "cell": list(slot["cell"]),
+                    "access": list(slot["access"]),
+                    "state": slot["state"],
+                    "task_id": slot["task_id"],
+                }
+                for slot in self.rack_slots
+            ],
+            "rack_islands": [
+                {"code": island["code"], "cell": list(island["cell"]), "size": island["size"]}
+                for island in self.rack_islands
+            ],
         }
