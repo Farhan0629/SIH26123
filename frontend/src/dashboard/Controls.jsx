@@ -83,7 +83,7 @@ export default function Controls() {
             ? placeMode
               ? 'Placing barriers: drag across the floor to close cells, drag over a barrier to reopen it. Camera rotation is held while placing.'
               : 'Pick “Place barriers” and draw blockages straight onto the floor, then resume and watch the fleet re-route around them.'
-            : 'Pause the demonstration to place or remove barriers. Radio dead zones can be toggled at any time.'}
+            : 'Pause the demonstration to place or remove barriers. Radio dead zones and the battery drill can be triggered at any time.'}
         </p>
         <div className="grid grid-cols-2 gap-2">
           <button
@@ -129,6 +129,29 @@ export default function Controls() {
                 title={offline ? `${label} radio offline - tap to reconnect` : `Cut ${label}'s radio link`}
               >
                 {offline ? `${label} ✕` : label}
+              </button>
+            )
+          })}
+          {!robots.length && <p className="col-span-3 text-[11px] text-slate-500">Waiting for fleet state.</p>}
+        </div>
+        {/* Energy drill. Pulling one unit under the threshold makes it book a
+            pad over the mesh, hand its package back to the auction and dock,
+            instead of waiting ninety seconds of driving for it to happen. */}
+        <p className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700">Force low battery</p>
+        <div className="grid grid-cols-3 gap-2">
+          {robots.map((robot) => {
+            const label = robot.name || `UNIT ${String(robot.id).padStart(2, '0')}`
+            const busy = robot.status === 'charging' || robot.status === 'moving_to_charge'
+            return (
+              <button
+                key={robot.id}
+                type="button"
+                disabled={!connected || busy}
+                onClick={() => sendSafe('drain_battery', { robot_id: robot.id })}
+                className={`${BUTTON} truncate px-2 ${busy ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-300 bg-slate-50 text-slate-800'} disabled:cursor-not-allowed disabled:opacity-60`}
+                title={busy ? `${label} is already on a charge run` : `Drop ${label} below the charge threshold`}
+              >
+                {busy ? `${label} ⚡` : `${label} ${Math.round(robot.battery)}%`}
               </button>
             )
           })}
