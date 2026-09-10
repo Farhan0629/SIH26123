@@ -3,9 +3,12 @@ from config import (
 )
 
 # Fixed demonstration floor.
-# Six loading tables sit on the WEST aisle (column 2) and six delivery tables
-# sit on the EAST aisle (column 16), so every package must cross the whole
-# warehouse. Rack islands are 2x2 blocks that force real aisle navigation.
+# Twelve staging tables: six on the WEST aisle (column 2) and six on the EAST
+# aisle (column 16). In a storage round every one of them starts with a carton
+# on it and the fleet works the whole floor. Rack islands are 2x2 blocks that
+# force real aisle navigation.
+# The two cell types (P/D) are kept because the headless benchmark still runs
+# the original west-to-east delivery manifest for its baseline comparison.
 LAYOUT = [
     "WWWWWWWWWWWWWWWWWWWW",  # 0
     "WC................CW",  # 1  chargers at (1,1) and (18,1)
@@ -54,6 +57,12 @@ class Warehouse:
         self.dropoff_points = []
         self.charging_stations = []
         self._extract_special_cells()
+        # Twelve staging tables, addressed T01..T12 (west first, north to
+        # south). A table is either "loaded" (one carton sitting on it) or
+        # "empty". It is emptied the moment a unit starts lifting and is never
+        # refilled during a round, so a carton can never reappear on a table it
+        # has already left.
+        self.tables: list[dict] = []
         self.blocked_cells = set()
         # Rack islands are real inventory locations, not scenery: every shelf
         # cell with an adjacent aisle is an addressable slot that can hold one
@@ -61,6 +70,7 @@ class Warehouse:
         self.rack_slots: list[dict] = []
         self.rack_islands: list[dict] = []
         self._extract_rack_slots()
+        self._extract_tables()
         # Physical floor occupancy, written by robots as they move. This stands
         # in for onboard proximity sensing: a robot can see a body in the next
         # cell even when its radio is down, exactly like a real LiDAR bumper.
@@ -84,7 +94,56 @@ class Warehouse:
                 elif val == CHARGING:
                     self.charging_stations.append((x, y))
 
-    # ─── Rack inventory ─────────────────────────────────────────────────
+    # ─── Staging tables ───────────────────────────────────────────────────
+
+    def _extract_tables(self):
+        """Address every table on the floor: T01..T06 west, T07..T12 east."""
+        west = sorted(self.pickup_points, key=lambda cell: (cell[1], cell[0]))
+        east = sorted(self.dropoff_points, key=lambda cell: (cell[1], cell[0]))
+        for index, cell in enumerate(west + east):
+            self.tables.append({
+                "id": index,
+                "code": f"T{index + 1:02d}",
+                "cell": cell,
+                "side": "west" if index < len(west) else "east",
+                "state": "empty",   # "empty" | "loaded"
+                "task_id": None,
+            })
+
+    def table_at(self, cell) -> dict | None:
+        cell = tuple(cell)
+        for table in self.tables:
+            if table["cell"] == cell:
+                return table
+        return None
+
+    def load_table(self, cell, task_id: int) -> bool:
+        """Place the staged carton for `task_id` on the table at `cell`."""
+        table = self.table_at(cell)
+        if table is None:
+            return False
+        table["state"] = "loaded"
+        table["task_id"] = task_id
+        return True
+
+    def mark_table_empty(self, cell) -> bool:
+        """The carton has physically left the table - a unit is lifting it."""
+        table = self.table_at(cell)
+        if table is None or table["state"] == "empty":
+            return False
+        table["state"] = "empty"
+        table["task_id"] = None
+        return True
+
+    def reset_tables(self):
+        for table in self.tables:
+            table["state"] = "empty"
+            table["task_id"] = None
+
+    def loaded_tables(self) -> list[dict]:
+        return [table for table in self.tables if table["state"] == "loaded"]
+
+    # ─── Rack inventory ───────────────────────────────────────────────────
 
     def _structurally_walkable(self, x: int, y: int) -> bool:
         """Walkable ignoring temporary barriers.
@@ -205,7 +264,7 @@ class Warehouse:
     def stored_slots(self) -> list[dict]:
         return [slot for slot in self.rack_slots if slot["state"] == "stored"]
 
-    # ─── Navigation ─────────────────────────────────────────────────────
+    # ─── Navigation ────────────────────────────────────────────────────────
 
     def is_walkable(self, x: int, y: int) -> bool:
         """Return True if cell (x,y) is in bounds, not SHELF/WALL, not blocked."""
@@ -240,6 +299,17 @@ class Warehouse:
             "pickups": self.pickup_points,
             "dropoffs": self.dropoff_points,
             "chargers": self.charging_stations,
+            "tables": [
+                {
+                    "id": table["id"],
+                    "code": table["code"],
+                    "cell": list(table["cell"]),
+                    "side": table["side"],
+                    "state": table["state"],
+                    "task_id": table["task_id"],
+                }
+                for table in self.tables
+            ],
             "racks": [
                 {
                     "id": slot["id"],
