@@ -19,21 +19,22 @@ function Batch({ items, color, opacity = 1 }) {
   if (!items.length) return null
   return <instancedMesh key={items.length} ref={ref} args={[null, null, items.length]} castShadow={opacity === 1} receiveShadow><boxGeometry args={[1, 1, 1]} /><meshStandardMaterial color={color} roughness={0.7} metalness={0.15} transparent={opacity < 1} opacity={opacity} depthWrite={opacity === 1} /></instancedMesh>
 }
-// Twelve fixed tables: six LOADING tables start with one package each, six
-// DELIVERY tables start empty. Packages are never created mid-episode, so an
-// empty slot outline shows exactly where a package is still expected.
-// Each table carries a hung 3D sign beside it instead of a floating HTML card.
-function Station({ cell, index, kind, items, handling }) {
-  const [x, z] = cell
-  const pickup = kind === 'pickup'
-  const tone = pickup ? '#a56b1e' : '#297359'
-  const busy = handling.some((h) => h.kind === kind && h.place !== 'rack' && h.station[0] === x && h.station[1] === z)
-  const item = pickup ? items[0] : items[items.length - 1]
+// Twelve staging tables, addressed T01..T12: six on the west aisle, six on the
+// east. Every one of them starts the round with exactly ONE carton on it.
+// The carton leaves the table the instant the lift dwell begins - from then on
+// the robot owns it - and the table is never restocked during the round, so a
+// carton can never appear on a table it has already left.
+function Station({ table, staged, handling }) {
+  const [x, z] = table.cell
+  const west = table.side === 'west'
+  const tone = west ? '#a56b1e' : '#2f6a8f'
+  const busy = handling.some((h) => h.place !== 'rack' && h.station[0] === x && h.station[1] === z)
+  const item = staged || null
   const state = busy
-    ? (pickup ? 'Robot lifting package' : 'Robot placing package')
+    ? 'Robot lifting carton'
     : item
-      ? (pickup ? `Package #${item.taskId} ready` : `Package #${item.taskId} delivered`)
-      : (pickup ? 'Collected · table clear' : 'Empty · awaiting package')
+      ? `Carton #${item.taskId} staged`
+      : 'Cleared \u00b7 carton in racks'
   return <group position={[x + 0.5, 0, z + 0.5]}>
     <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[0.96, 0.96]} /><meshBasicMaterial color={tone} transparent opacity={0.16} depthWrite={false} /></mesh>
     <mesh position={[0.40, 0.745, 0]} receiveShadow><boxGeometry args={[0.32, 0.05, 0.7]} /><meshStandardMaterial color="#61758a" metalness={0.5} roughness={0.4} /></mesh>
@@ -41,7 +42,7 @@ function Station({ cell, index, kind, items, handling }) {
     <mesh position={[0.4, 0.78, -0.34]}><boxGeometry args={[0.32, 0.025, 0.025]} /><meshBasicMaterial color={tone} /></mesh>
     {!busy && !item && <mesh position={[0.40, 0.776, 0]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[0.26, 0.4]} /><meshBasicMaterial color={tone} transparent opacity={0.34} depthWrite={false} /></mesh>}
     {!busy && item && <CargoBox taskId={item.taskId} position={[0.40, 0.91, 0]} rotation={[0, Math.PI / 2, 0]} />}
-    <Sign at={[0.4, 2.14, 0]} title={`${pickup ? 'LOADING' : 'DELIVERY'} ${index + 1}`} subtitle={state} tone={tone} width={1.7} hang={0.55} />
+    <Sign at={[0.4, 2.14, 0]} title={`TABLE ${table.code}`} subtitle={state} tone={tone} width={1.7} hang={0.55} />
   </group>
 }
 // A charge pad is live infrastructure now: the ring breathes while a unit is
@@ -159,9 +160,10 @@ export default function Warehouse() {
     if (!warehouse?.grid) return result
     const { grid, width, height } = warehouse
     const add = (list, at, size) => result[list].push({ at, size })
-    // Slots the fleet is actually using are cleared of scenery cartons: a
-    // reserved slot must read as empty, a stored slot carries the real package.
-    const claimed = new Set(liveSlots.map((slot) => `${slot.cell[0]}:${slot.cell[1]}`))
+    // The racks start almost empty on purpose. Only the top deck keeps a little
+    // legacy stock for depth; the deck the fleet stores on is bare, so every
+    // carton a judge sees on a shelf was put there by a robot on screen.
+    const decorLevel = low ? null : 1.76
     for (let z = 0; z < height; z++) for (let x = 0; x < width; x++) {
       const cell = grid[z][x]
       if (cell === 1 && grid[z - 1]?.[x] !== 1 && grid[z]?.[x - 1] !== 1) {
@@ -170,10 +172,10 @@ export default function Warehouse() {
         for (const level of (low ? [0.24] : [0.24, 1.0, 1.76])) {
           add('decks', [cx, level, cz], [1.76, 0.035, 1.76])
           for (const dz of [-0.85, 0.85]) add('rails', [cx, level, cz + dz], [1.8, 0.09, 0.065])
-          for (const dx of [-0.43, 0.43]) for (const dz of [-0.42, 0.42]) {
-            if (level === storeLevel && claimed.has(`${dx < 0 ? x : x + 1}:${dz < 0 ? z : z + 1}`)) continue
-            add('boxes', [cx + dx, level + 0.23, cz + dz], [0.58, 0.43, 0.60])
-            add('tape', [cx + dx, level + 0.448, cz + dz], [0.07, 0.008, 0.61])
+          if (level !== decorLevel) continue
+          for (const dx of [-0.43, 0.43]) {
+            add('boxes', [cx + dx, level + 0.23, cz - 0.42], [0.58, 0.43, 0.60])
+            add('tape', [cx + dx, level + 0.448, cz - 0.42], [0.07, 0.008, 0.61])
           }
         }
       }
@@ -184,14 +186,17 @@ export default function Warehouse() {
       }
     }
     return result
-  }, [warehouse, low, storeLevel, liveSlots])
-  const cargo = useMemo(() => mapCargoLifecycle(tasks, robots), [tasks, robots])
+  }, [warehouse, low])
+  const cargo = useMemo(() => mapCargoLifecycle(tasks, robots, warehouse), [tasks, robots, warehouse])
   if (!warehouse) return null
   const { width, height } = warehouse
   const opacity = shelfView === 'xray' ? 0.18 : 1
   const handling = robots.map((r) => r.handling).filter(Boolean)
   const placing = placeMode && (!sim.running || sim.paused)
-  const chargerName = (x, z, status) => robots.find((r) => r.charger?.[0] === x && r.charger?.[1] === z && r.status === status)?.name
+  // A unit parked on its pad after the round is still physically docked, so it
+  // keeps the pad label and the cable.
+  const padOccupant = (x, z) => robots.find((r) => r.charger?.[0] === x && r.charger?.[1] === z && (r.status === 'charging' || r.parked))?.name
+  const padClaimant = (x, z) => robots.find((r) => r.charger?.[0] === x && r.charger?.[1] === z && r.status === 'moving_to_charge')?.name
   return <group>
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[width / 2, -0.005, height / 2]} receiveShadow><planeGeometry args={[width + 0.8, height + 0.8]} /><meshStandardMaterial color="#d5dbd8" roughness={0.86} /></mesh>
     <gridHelper args={[20, 20, '#aebbb9', '#c0cbc7']} position={[width / 2, 0.002, height / 2]} />
@@ -208,11 +213,10 @@ export default function Warehouse() {
         stored slot turns green and carries the real package until it is picked. */}
     {liveSlots.map((slot) => <group key={slot.id}>
       <mesh position={[slot.access[0] + 0.5, 0.014, slot.access[1] + 0.5]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[0.92, 0.92]} /><meshBasicMaterial color={slot.state === 'stored' ? '#297359' : '#b8862c'} transparent opacity={0.22} depthWrite={false} /></mesh>
-      {slot.state === 'stored' && <CargoBox taskId={slot.task_id} position={[slot.cell[0] + 0.5, storeLevel + 0.16, slot.cell[1] + 0.5]} />}
+      {slot.state === 'stored' && cargo.storedCargo.some((item) => item.taskId === slot.task_id) && <CargoBox taskId={slot.task_id} position={[slot.cell[0] + 0.5, storeLevel + 0.16, slot.cell[1] + 0.5]} />}
     </group>)}
-    {(warehouse.pickups || []).map((cell, i) => <Station key={`p${i}`} cell={cell} index={i} kind="pickup" handling={handling} items={cargo.pickupCargo.filter((t) => t.pickup[0] === cell[0] && t.pickup[1] === cell[1])} />)}
-    {(warehouse.dropoffs || []).map((cell, i) => <Station key={`d${i}`} cell={cell} index={i} kind="dropoff" handling={handling} items={cargo.deliveredCargo.filter((t) => t.dropoff[0] === cell[0] && t.dropoff[1] === cell[1])} />)}
-    {(warehouse.chargers || []).map(([x, z], i) => <ChargerPad key={`c${i}`} cell={[x, z]} index={i} occupant={chargerName(x, z, 'charging')} claimant={chargerName(x, z, 'moving_to_charge')} />)}
+    {(warehouse.tables || []).map((table) => <Station key={table.code} table={table} handling={handling} staged={cargo.tableCargo.find((item) => item.cell[0] === table.cell[0] && item.cell[1] === table.cell[1])} />)}
+    {(warehouse.chargers || []).map(([x, z], i) => <ChargerPad key={`c${i}`} cell={[x, z]} index={i} occupant={padOccupant(x, z)} claimant={padClaimant(x, z)} />)}
     {(warehouse.blocked || []).map(([x, z]) => <BlockedAisle key={`${x}:${z}`} position={[x + 0.5, 0, z + 0.5]} cell={[x, z]} />)}
     {placing && <BlockPlacement width={width} height={height} />}
   </group>
