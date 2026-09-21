@@ -26,10 +26,8 @@ hard requirements live:
                        and sending mesh traffic and must keep itself safe on
                        onboard sensing alone, which is what \"no central server\"
                        actually has to survive.
-  * drain_battery    - pulls one unit's state of charge under the threshold so
-                       the autonomous charge run (claim a pad over the mesh,
-                       hand the package back to the auction, dock, charge,
-                       rejoin) can be shown on demand instead of waited for.
+  * boost_battery    - maxes out one unit's state of charge to 100% so it can
+                       continue operating without needing a charge run.
 
 Barrier edits are only accepted while the simulation is paused or has not been
 started, so an obstacle can never appear underneath a unit that is mid-step.
@@ -352,16 +350,11 @@ async def websocket_endpoint(ws: WebSocket):
                         p2p_network.partition_robot(robot.id)
                         event_logger.add_event("hazard", f"{robot.name} lost radio in a Wi-Fi dead zone - navigating on onboard sensors only", robot_id=robot.id, tick=sim_state["tick"])
                     await broadcast_state(build_state_message(sim_state["tick"]))
-                elif action == "drain_battery":
-                    # Energy drill: pull a unit under the threshold so the
-                    # autonomous charge run happens now instead of in ninety
-                    # seconds of driving.
+                elif action == "boost_battery":
+                    # Energy boost: max out a unit's battery to full charge.
                     robot = find_robot(int(command["robot_id"]))
-                    level = float(command.get("level", BATTERY_LOW_THRESHOLD - 3))
-                    if not math.isfinite(level) or not 1 <= level <= BATTERY_MAX:
-                        raise ValueError(f"Battery level must be between 1 and {BATTERY_MAX}")
-                    robot.battery = level
-                    event_logger.add_event("charging", f"Drill: {robot.name} state of charge pulled down to {robot.battery:.0f}% \\u2014 it will book a pad over the mesh and detour to charge", robot_id=robot.id, tick=sim_state["tick"])
+                    robot.battery = float(BATTERY_MAX)
+                    event_logger.add_event("charging", f"Boost: {robot.name} state of charge set to {robot.battery:.0f}%", robot_id=robot.id, tick=sim_state["tick"])
                     await broadcast_state(build_state_message(sim_state["tick"]))
                 elif action == "run_baseline" and not baseline_running:
                     baseline_running = True

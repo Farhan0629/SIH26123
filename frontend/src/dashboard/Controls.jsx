@@ -134,24 +134,22 @@ export default function Controls() {
           })}
           {!robots.length && <p className="col-span-3 text-[11px] text-slate-500">Waiting for fleet state.</p>}
         </div>
-        {/* Energy drill. Pulling one unit under the threshold makes it book a
-            pad over the mesh, hand its package back to the auction and dock,
-            instead of waiting ninety seconds of driving for it to happen. */}
-        <p className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700">Force low battery</p>
+        {/* Energy boost. Instantly max out a unit's battery to 100%. */}
+        <p className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Force high battery</p>
         <div className="grid grid-cols-3 gap-2">
           {robots.map((robot) => {
             const label = robot.name || `UNIT ${String(robot.id).padStart(2, '0')}`
-            const busy = robot.status === 'charging' || robot.status === 'moving_to_charge'
+            const full = robot.battery >= 100
             return (
               <button
                 key={robot.id}
                 type="button"
-                disabled={!connected || busy}
-                onClick={() => sendSafe('drain_battery', { robot_id: robot.id })}
-                className={`${BUTTON} truncate px-2 ${busy ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-300 bg-slate-50 text-slate-800'} disabled:cursor-not-allowed disabled:opacity-60`}
-                title={busy ? `${label} is already on a charge run` : `Drop ${label} below the charge threshold`}
+                disabled={!connected || full}
+                onClick={() => sendSafe('boost_battery', { robot_id: robot.id })}
+                className={`${BUTTON} truncate px-2 ${full ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-300 bg-slate-50 text-slate-800'} disabled:cursor-not-allowed disabled:opacity-60`}
+                title={full ? `${label} is already at 100%` : `Boost ${label} to full charge`}
               >
-                {busy ? `${label} ⚡` : `${label} ${Math.round(robot.battery)}%`}
+                {full ? `${label} ⚡` : `${label} ${Math.round(robot.battery)}%`}
               </button>
             )
           })}

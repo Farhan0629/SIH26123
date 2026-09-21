@@ -21,7 +21,7 @@ BATTERY_DRAIN_IDLE = 0.1
 # pad over the mesh, abandons whatever it has not picked up yet, drives to the
 # pad and returns to the auction once it is full again.
 BATTERY_LOW_THRESHOLD = 50.0
-BATTERY_CHARGE_PER_TICK = 2.0    # inductive pad recovery rate
+BATTERY_CHARGE_PER_TICK = 5.0    # inductive pad recovery rate
 BATTERY_CHARGED_LEVEL = 100.0    # unplug and rejoin the fleet at this level
 SENSOR_RANGE = 5         # cells visible around robot (onboard LiDAR-style sensing)
 DEFAULT_ROBOT_STARTS = [
@@ -32,10 +32,8 @@ DEFAULT_ROBOT_STARTS = [
 
 # Opening state of charge for the web demonstration only. The headless
 # benchmark always starts every unit full, so the coordination numbers are not
-# influenced by an artificial energy handicap. Staggering the levels here means
-# a judge sees a real charge run inside the first minute instead of waiting for
-# a 200-move discharge.
-DEMO_BATTERY_LEVELS = [58.0, 100.0, 76.0]
+# influenced by an artificial energy handicap.
+DEMO_BATTERY_LEVELS = [100.0, 100.0, 100.0]
 
 # ─── Fleet Identity ───
 # Named units keep the demonstration readable: the 3D labels, the fleet cards
@@ -80,6 +78,14 @@ STAGED_TABLES = 12               # 6 west + 6 east, one carton each
 # When the last carton is on the shelf the round is over: every unit books a
 # pad over the mesh, drives to it, plugs in and parks for the shift.
 END_OF_ROUND_CHARGE = True
+
+# ─── Sequential rack filling ───
+# Indices of rack islands to keep empty (0-based). Robots fill them in this
+# order: all slots in the first island, then the second, then the third.
+# Every other island starts the round pre-filled ("stored"), so only the
+# target islands receive cartons. Set to None to use the original
+# spread-across-all-islands behaviour.
+TARGET_ISLANDS = [0, 4, 8]       # A1, B2, C3 (diagonal spread)
 
 # ─── P2P Communication ───
 P2P_BROADCAST_INTERVAL = 1  # ticks between position broadcasts (10Hz)

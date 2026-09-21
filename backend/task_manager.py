@@ -1,6 +1,6 @@
 import random
 
-from config import robot_name
+from config import robot_name, TARGET_ISLANDS
 
 # Which rack island each staged carton is routed to. The order deliberately
 # hops between bands and columns so the twelve putaway runs spread over the
@@ -77,11 +77,39 @@ class TaskManager:
         self.stored_count = 0
 
     def _choose_slot(self, index: int, pickup: tuple[int, int]) -> dict | None:
-        """Reserve an empty rack slot for the carton staged at `pickup`."""
+        """Reserve an empty rack slot for the carton staged at `pickup`.
+
+        When TARGET_ISLANDS is set, the target islands are tried in order so
+        that all slots in the first island fill before the second is touched.
+        """
         islands = getattr(self.warehouse, "rack_islands", [])
         slots = getattr(self.warehouse, "rack_slots", [])
         if not islands or not slots:
             return None
+
+        if TARGET_ISLANDS is not None:
+            # Sequential filling: walk through target islands in order and
+            # pick the first one that still has an empty slot.
+            for island_idx in TARGET_ISLANDS:
+                if island_idx >= len(islands):
+                    continue
+                island = islands[island_idx]
+                candidates = [
+                    slots[sid] for sid in island["slots"]
+                    if slots[sid]["state"] == "empty"
+                ]
+                if candidates:
+                    return min(
+                        candidates,
+                        key=lambda slot: (
+                            abs(slot["access"][0] - pickup[0])
+                            + abs(slot["access"][1] - pickup[1]),
+                            slot["id"],
+                        ),
+                    )
+            return None  # all target islands full
+
+        # Original spread-across-islands logic
         island = islands[ISLAND_ORDER[index % len(ISLAND_ORDER)] % len(islands)]
         candidates = [slots[slot_id] for slot_id in island["slots"] if slots[slot_id]["state"] == "empty"]
         if not candidates:
@@ -132,6 +160,15 @@ class TaskManager:
         """
         self.warehouse.reset_tables()
         self.warehouse.reset_racks()
+        # Pre-fill every island that is NOT a target so it appears occupied.
+        if TARGET_ISLANDS is not None:
+            target_set = set(TARGET_ISLANDS)
+            for idx, island in enumerate(self.warehouse.rack_islands):
+                if idx not in target_set:
+                    for sid in island["slots"]:
+                        slot = self.warehouse.rack_slots[sid]
+                        slot["state"] = "stored"
+                        slot["task_id"] = None
         for index, table in enumerate(list(self.warehouse.tables)):
             slot = self._choose_slot(index, table["cell"])
             if slot is None:
