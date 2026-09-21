@@ -35,8 +35,11 @@ started, so an obstacle can never appear underneath a unit that is mid-step.
 import asyncio
 import json
 import math
+import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from config import (
     NUM_ROBOTS, TICK_INTERVAL, MAX_TICKS, DEFAULT_ROBOT_STARTS, FACILITY_BEACON_ID,
     BATTERY_MAX, BATTERY_LOW_THRESHOLD, DEMO_BATTERY_LEVELS, STORAGE_FLOW_ENABLED,
@@ -367,8 +370,22 @@ async def websocket_endpoint(ws: WebSocket):
         if ws in connected_clients:
             connected_clients.remove(ws)
 
-@app.get("/")
-def root():
+FRONTEND_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+if os.path.exists(FRONTEND_DIST):
+    assets_dir = os.path.join(FRONTEND_DIST, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/")
+    def serve_frontend():
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+else:
+    @app.get("/")
+    def root():
+        return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.6-putaway-round"}
+
+@app.get("/api/status")
+def status():
     return {"status": "Edge-AI AMR Fleet Coordination Server", "version": "1.6-putaway-round"}
 
 @app.get("/api/warehouse")

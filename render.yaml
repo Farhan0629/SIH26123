@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: sih26123-robosim
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /api/status

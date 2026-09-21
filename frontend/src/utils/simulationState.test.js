@@ -45,7 +45,7 @@ test('status copy reads as a putaway round', () => {
   assert.equal(getRobotStatusMeta({ status: 'moving_to_dropoff', has_cargo: true }).label, 'Carrying to rack')
   assert.equal(getRobotStatusMeta({ handling: { kind: 'dropoff', place: 'rack' } }).label, 'Storing in rack')
   assert.equal(getRobotStatusMeta({ status: 'charging', has_cargo: false }).label, 'Charging')
-  assert.equal(getRobotStatusMeta({ status: 'idle', parked: true }).label, 'Parked \\u00b7 charged')
+  assert.equal(getRobotStatusMeta({ status: 'idle', parked: true }).label, 'Parked \u00b7 charged')
 })
 
 test('next stop names the table it is collecting from and the slot it is filling', () => {

@@ -4,9 +4,25 @@ let client
 export function resolveWebSocketUrl() {
   const configured = import.meta.env?.VITE_WS_URL
   if (configured) return configured
-  const host = typeof window !== 'undefined' ? window.location.hostname || 'localhost' : 'localhost'
-  const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
-  return `${typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws'}://${bracketed}:8000/ws`
+  if (typeof window === 'undefined') return 'ws://localhost:8000/ws'
+  const isHttps = window.location.protocol === 'https:'
+  const wsProto = isHttps ? 'wss' : 'ws'
+  const host = window.location.hostname || 'localhost'
+  const port = window.location.port
+
+  // In local Vite dev (port 5173 or 3000), backend is on port 8000
+  if (port === '5173' || port === '3000') {
+    const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+    return `${wsProto}://${bracketed}:8000/ws`
+  }
+
+  // Localhost test or fallback without port
+  if ((host === 'localhost' || host === '127.0.0.1') && (!port || port === '8000')) {
+    return `${wsProto}://${host}:8000/ws`
+  }
+
+  // Live production deployment (Render, Railway, custom domain)
+  return `${wsProto}://${window.location.host}/ws`
 }
 function getClient() {
   if (!client) client = createSocketClient({
