@@ -55,6 +55,7 @@ class Task:
             "dropoff_kind": self.dropoff_kind,
             "table_code": self.table_code,
             "slot_code": self.slot_code,
+            "slot_id": self.slot_id,
             "slot_cell": list(self.slot_cell) if self.slot_cell else None,
             "origin": list(self.origin),
             "destination": list(self.destination),
@@ -215,6 +216,13 @@ class TaskManager:
         for task in self.active_tasks[:]:
             assigned_robot = next((r for r in robots if r.id == task.assigned_to), None)
             if assigned_robot:
+                # Robot-selected access may change; shelf destination and slot
+                # reservation do not. Keep task telemetry consistent with its unit.
+                payload = assigned_robot.current_task
+                if (payload and payload.get("id") == task.id and task.dropoff_kind == "rack"
+                        and tuple(payload["dropoff"]) in self.warehouse.rack_access_cells(task.slot_cell)):
+                    task.dropoff = tuple(payload["dropoff"])
+                    task.slot_access = task.dropoff
                 charging = (
                     assigned_robot.status in ("charging", "moving_to_charge")
                     or getattr(assigned_robot, "target_charger", None) is not None
