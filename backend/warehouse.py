@@ -224,6 +224,18 @@ class Warehouse:
                 "slots": slot_ids,
             })
 
+    def rack_access_cells(self, slot_cell) -> list[tuple[int, int]]:
+        """All structural aisle faces of the SAME shelf cell, not nearby slots.
+
+        Keep barriers out of this definition: the robot planner evaluates their
+        live reachability. Never reach diagonally or through another shelf.
+        """
+        x, y = tuple(slot_cell)
+        if not (0 <= x < self.width and 0 <= y < self.height) or self.grid[y][x] != SHELF:
+            return []
+        return [cell for cell in ((x-1, y), (x+1, y), (x, y-1), (x, y+1))
+                if self._structurally_walkable(*cell)]
+
     def get_slot(self, slot_id: int) -> dict | None:
         if slot_id is None or not (0 <= slot_id < len(self.rack_slots)):
             return None

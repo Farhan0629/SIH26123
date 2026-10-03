@@ -417,17 +417,13 @@ class Robot:
                 return "charged" if gained >= 1.0 else "parked"
             return "charging"
         
-        # Check if already at goal
-        if not self.carrying and self.current_task:
-            if (self.x, self.y) == tuple(self.current_task["pickup"]):
-                return self._handle_arrival(tick, p2p_network)
-        elif self.carrying and self.current_task:
-            if (self.x, self.y) == tuple(self.current_task["dropoff"]):
-                return self._handle_arrival(tick, p2p_network)
-        elif self.target_charger is not None:
+        # A rack transfer may finish from any legal face of the same slot.
+        if self.current_task and self._at_task_goal():
+            return self._handle_arrival(tick, p2p_network)
+        elif self.target_charger is not None and not self.current_task:
             if (self.x, self.y) == self.target_charger:
                 return self._begin_charging(tick, event_logger)
-        
+
         # Recheck the entire remaining route, not just the next waypoint.
         if any(not self.warehouse.is_walkable(*cell)
                for cell in self.planned_path[self.path_index:]):
@@ -490,14 +486,12 @@ class Robot:
         self._move_to(next_cell, p2p_network, tick)
         self.path_index += 1
         
-        # Check if reached goal after moving
-        if not self.carrying and self.current_task and (self.x, self.y) == tuple(self.current_task["pickup"]):
-            return self._handle_arrival(tick, p2p_network)
-        elif self.carrying and self.current_task and (self.x, self.y) == tuple(self.current_task["dropoff"]):
+        # Check arrival against all rack faces, not a single fixed waypoint.
+        if self.current_task and self._at_task_goal():
             return self._handle_arrival(tick, p2p_network)
         elif self.target_charger is not None and not self.current_task and (self.x, self.y) == self.target_charger:
             return self._begin_charging(tick, event_logger)
-        
+
         return "moved"
     
     def _expire_peer_memory(self, tick):
@@ -602,6 +596,30 @@ class Robot:
         
         return "idle"
     
+    def _navigation_goals(self):
+        if not self.current_task:
+            return [self.target_charger] if self.target_charger is not None else []
+        key = "dropoff" if self.carrying else "pickup"
+        preferred = tuple(self.current_task[key])
+        if self.current_task.get(f"{key}_kind") == "rack" and self.current_task.get("slot_cell"):
+            faces = self.warehouse.rack_access_cells(self.current_task["slot_cell"])
+            return sorted(faces, key=lambda cell: (cell != preferred, cell))
+        return [preferred]
+
+    def _set_navigation_goal(self, goal):
+        if self.current_task:
+            key = "dropoff" if self.carrying else "pickup"
+            self.current_task[key] = tuple(goal)
+
+    def _at_task_goal(self):
+        cell = (self.x, self.y)
+        if self.warehouse.is_walkable(*cell) and cell in self._navigation_goals():
+            self._set_navigation_goal(cell)
+            self.navigation_message = None
+            self.navigation_blocked_reason = None
+            return True
+        return False
+
     def _replan_path(self, p2p_network=None, tick: int = 0):
         if not self.current_task and self.target_charger is None:
             self.planned_path = []
@@ -610,20 +628,16 @@ class Robot:
             self.navigation_blocked_reason = None
             return
         
-        if self.target_charger is not None and not self.current_task:
-            goal = self.target_charger
-        elif self.carrying:
-            goal = tuple(self.current_task["dropoff"])
-        else:
-            goal = tuple(self.current_task["pickup"])
-        
+        goals = self._navigation_goals()
         start = (self.x, self.y)
-        # First distinguish a real barrier enclosure from temporary fleet traffic.
-        terrain_path = a_star(self.warehouse, start, goal)
-        if terrain_path is None:
-            barrier_caused = bool(self.warehouse.blocked_cells) and a_star(
-                self.warehouse, start, goal, ignore_barriers=True
-            ) is not None
+        # Check every face of a rack slot before declaring its carton blocked.
+        terrain_routes = [(goal, route) for goal in goals
+                          if (route := a_star(self.warehouse, start, goal)) is not None]
+        if not terrain_routes:
+            barrier_caused = bool(self.warehouse.blocked_cells) and any(
+                a_star(self.warehouse, start, goal, ignore_barriers=True) is not None
+                for goal in goals
+            )
             self.navigation_blocked_reason = "barrier" if barrier_caused else "unreachable"
             self.navigation_message = "Please remove the barrier" if barrier_caused else "Destination unreachable"
             path = None
@@ -632,11 +646,16 @@ class Robot:
             self.navigation_blocked_reason = None
             occupied = self._occupied_cells()
             if self.consecutive_waits >= REPLAN_AFTER_WAITS:
-                # Seek a detour around cells we currently yield to, not the same
-                # shortest path that repeatedly produces an intent conflict.
                 occupied |= {tuple(cell) for intent in self.known_peer_intents.values()
                              for cell in intent[:3] if self._would_collide(tuple(cell))}
-            path = a_star(self.warehouse, start, goal, occupied) or terrain_path
+            safe_routes = [(goal, route) for goal, _ in terrain_routes
+                           if (goal not in occupied or goal == start)
+                           and (route := a_star(self.warehouse, start, goal, occupied)) is not None]
+            # Preserve the current face when reachable; choose another safe face
+            # if blocked. Physical slot identity and cargo reservation never change.
+            goal, path = min(safe_routes or terrain_routes,
+                             key=lambda item: (goals.index(item[0]), len(item[1])))
+            self._set_navigation_goal(goal)
 
         self.planned_path = path or []
         self.path_index = 1 if self.planned_path and len(self.planned_path) > 1 else 0
